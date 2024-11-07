@@ -1,0 +1,17 @@
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+
+# Ignore other common files
+.DS_Store
+.idea/
+*.log
+*.sqlite3
+
+bin/
+lib/
+
+# Ignore pyvenv configuration file
+pyvenv.cfg
