@@ -2,6 +2,11 @@ import pydicom
 import numpy as np
 import matplotlib.pyplot as plt
 import io
+import torch
+import os
+
+from app.logic.CNN import Simple3DCNN
+
 
 def create_composite_image(files):
     pixel_data_list = []
@@ -28,3 +33,25 @@ def save_image_to_bytes(image_array):
     plt.imsave(buf, image_array, cmap='gray', format='png')
     buf.seek(0)
     return buf
+
+def run_single_classification(path: str):
+    model = Simple3DCNN()
+    script_dir = os.path.dirname(__file__)  # Get the directory of the current script
+    model_path = os.path.join(script_dir, "../../models/best_3dcnn_model.pth")
+    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
+    model.eval()
+
+    # path = os.path.join(script_dir, '../../test/drsprg_001_POST.dcm')
+
+    dicom = pydicom.dcmread(path)
+    img = dicom.pixel_array.astype(np.float32)
+    img /= np.max(img)  # Normalize
+    volume_tensor = torch.tensor(img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+
+    with torch.no_grad():
+        output = model(volume_tensor)
+        predicted = torch.argmax(output, dim=1)
+
+    predicted_class = predicted.item()
+    print(f"Predicted class: {predicted_class}")
+    print("Output probabilities:", output)

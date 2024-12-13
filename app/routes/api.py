@@ -1,28 +1,28 @@
-from app import app, supabase_extension
-from flask import request, jsonify
+from flask import request, jsonify, Blueprint
 import uuid
+from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification
+from app.client import supabase_client
 
-from app.logic.logic import create_composite_image, save_image_to_bytes
+api = Blueprint('api', __name__)
 
-
-@app.route('/')
-@app.route('/index')
+@api.route('/')
+@api.route('/index')
 def index():
     return "Hello, World!"
 
 
-@app.route('/users')
+@api.route('/users')
 def get_users():
-    response = supabase_extension.client.from_('users').select('*').execute()
+    response = supabase_client.table('profiles').select('*').execute()
     return response.data
 
-@app.route('/compositeImages')
+@api.route('/compositeImages')
 def get_composite_images():
     response = supabase_extension.client.storage.from_('composite-images').list()
     return response
 
 
-@app.route('/process_dicom', methods=['POST'])
+@api.route('/process_dicom', methods=['POST'])
 def process_dicom():
     if 'files' not in request.files:
         return jsonify({'error': 'No files part in the request'}), 400
@@ -54,3 +54,17 @@ def process_dicom():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
+
+@api.route('/classify', methods=['POST'])
+def classify():
+    if 'file' not in request.files:
+        return jsonify({'error': 'No files part in the request'}), 400
+    file = request.files.getlist('file')
+    if len(file) == 0:
+        return jsonify({'error': 'No files selected'}), 400
+
+    print(file[0])
+    print("Type of files: ", type(file[0]))
+    run_single_classification(file[0].stream)
+
+    return jsonify({'message': 'Classify endpoint'}), 200
