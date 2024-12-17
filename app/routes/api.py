@@ -1,7 +1,7 @@
 from flask import request, jsonify, Blueprint
 import uuid
 from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification
-from app.client import supabase_client
+from app.client import create_sb_client
 
 api = Blueprint('api', __name__)
 
@@ -13,6 +13,7 @@ def index():
 
 @api.route('/users')
 def get_users():
+    supabase_client = create_sb_client()
     response = supabase_client.table('profiles').select('*').execute()
     return response.data
 
@@ -57,14 +58,43 @@ def process_dicom():
 
 @api.route('/classify', methods=['POST'])
 def classify():
+    supabase_client = create_sb_client()
+    auth_header = request.headers.get('Authorization')
+    if not auth_header or not auth_header.startswith("Bearer "):
+        return jsonify({'error': 'Missing or invalid Authorization header'}), 401
+
+    access_token = auth_header.split("Bearer ")[1].strip()
+    user_info = supabase_client.auth.get_user(access_token)
+
+    print("User info: ", user_info)
+
+    if not user_info or not user_info.user:
+        return jsonify({'error': 'Invalid access token or no session'}), 401
+
+    if user_info.user.role != 'authenticated':
+        return jsonify({'error': 'Unauthorized'}), 403
+
+    supabase_client.postgrest.auth(access_token)
+
     if 'file' not in request.files:
         return jsonify({'error': 'No files part in the request'}), 400
+
     file = request.files.getlist('file')
     if len(file) == 0:
         return jsonify({'error': 'No files selected'}), 400
 
+
     print(file[0])
     print("Type of files: ", type(file[0]))
-    run_single_classification(file[0].stream)
+    predicted, probabilities = run_single_classification(file[0].stream)
+
+    response = (
+        supabase_client.table("analysis")
+        .insert({"user_id": user_info.user.user_metadata["sub"],
+                 "ckd_stage_prediction": predicted,
+                 "probabilities": probabilities.tolist()}).execute()
+    )
+
+    print(response)
 
     return jsonify({'message': 'Classify endpoint'}), 200

@@ -54,4 +54,6 @@ def run_single_classification(path: str):
 
     predicted_class = predicted.item()
     print(f"Predicted class: {predicted_class}")
-    print("Output probabilities:", output)
+    print("Output probabilities:", output.flatten())
+
+    return predicted_class, output.flatten()

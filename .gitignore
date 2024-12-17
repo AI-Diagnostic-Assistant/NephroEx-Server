@@ -15,3 +15,7 @@ lib/
 
 # Ignore pyvenv configuration file
 pyvenv.cfg
+
+models/
+test/
+
