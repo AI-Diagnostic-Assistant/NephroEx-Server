@@ -19,12 +19,14 @@ def get_users():
 
 @api.route('/compositeImages')
 def get_composite_images():
-    response = supabase_extension.client.storage.from_('composite-images').list()
+    supabase_client = create_sb_client()
+    response = supabase_client.storage.from_('composite-images').list()
     return response
 
 
 @api.route('/process_dicom', methods=['POST'])
 def process_dicom():
+    supabase_client = create_sb_client()
     if 'files' not in request.files:
         return jsonify({'error': 'No files part in the request'}), 400
     files = request.files.getlist('files')
@@ -41,14 +43,14 @@ def process_dicom():
         image_filename = f"{uuid.uuid4()}.png"
 
         # Upload to Supabase Storage
-        bucket = supabase_extension.client.storage.from_('composite-images')
+        bucket = supabase_client.storage.from_('composite-images')
         bucket.upload(image_filename, image_io.getvalue(), file_options={'content-type': 'image/png'})
         public_url = bucket.get_public_url(image_filename)
 
         data = {
             'image_url': public_url,
         }
-        supabase_extension.client.from_('composite_image').insert(data).execute()
+        supabase_client.table('composite_image').insert(data).execute()
 
         return jsonify({'image_url': public_url})
 
