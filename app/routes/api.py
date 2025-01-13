@@ -1,7 +1,13 @@
+import os
+
+import numpy as np
+import torch
 from flask import request, jsonify, Blueprint
 import uuid
-from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification
-from app.client import create_sb_client
+from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, \
+    run_single_classification_svm, create_composite_image_test, load_image, predict_kidney_masks, create_renogram, \
+    align_masks_over_frames, visualize_masks
+from app.client import create_sb_client, authenticate_request
 
 api = Blueprint('api', __name__)
 
@@ -58,26 +64,9 @@ def process_dicom():
         return jsonify({'error': str(e)}), 500
 
 
-@api.route('/classify', methods=['POST'])
-def classify():
-    supabase_client = create_sb_client()
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return jsonify({'error': 'Missing or invalid Authorization header'}), 401
-
-    access_token = auth_header.split("Bearer ")[1].strip()
-    user_info = supabase_client.auth.get_user(access_token)
-
-    print("User info: ", user_info)
-
-    if not user_info or not user_info.user:
-        return jsonify({'error': 'Invalid access token or no session'}), 401
-
-    if user_info.user.role != 'authenticated':
-        return jsonify({'error': 'Unauthorized'}), 403
-
-    supabase_client.postgrest.auth(access_token)
-
+@api.route('/classify_cnn', methods=['POST'])
+@authenticate_request
+def classify_cnn(supabase_client, user_info):
     if 'file' not in request.files:
         return jsonify({'error': 'No files part in the request'}), 400
 
@@ -85,18 +74,63 @@ def classify():
     if len(file) == 0:
         return jsonify({'error': 'No files selected'}), 400
 
-
     print(file[0])
     print("Type of files: ", type(file[0]))
-    predicted, probabilities = run_single_classification(file[0].stream)
+    predicted, probabilities = run_single_classification_cnn(file[0].stream)
 
     response = (
         supabase_client.table("analysis")
-        .insert({"user_id": user_info.user.user_metadata["sub"],
+        .insert({"user_id": user_info.user.id,
                  "ckd_stage_prediction": predicted,
                  "probabilities": probabilities.tolist()}).execute()
     )
 
     print(response)
 
-    return jsonify({'message': 'Classify endpoint'}), 200
+    return jsonify({'message': 'Classify endpoint', "id": response.data[0]["id"]}), 200
+
+@api.route('/classify_svm', methods=['POST'])
+@authenticate_request
+def classify_svm(supabase_client, user_info):
+    if 'file' not in request.files:
+        return jsonify({'error': 'No files part in the request'}), 400
+
+    dicom_file = request.files.getlist('file')
+    if len(dicom_file) == 0:
+        return jsonify({'error': 'No files selected'}), 400
+
+    print(dicom_file[0])
+    print("Type of files: ", type(dicom_file[0]))
+
+    # Create composite image of the request file
+    composite_image = create_composite_image_test(dicom_file[0].stream)
+
+    # Reset the stream pointer
+    dicom_file[0].stream.seek(0)
+
+    # Predict kidney masks
+    left_mask, right_mask = predict_kidney_masks(composite_image)
+
+    #visualize_masks(composite_image, left_mask, right_mask)
+
+    #align masks over all frames in the original dicom file
+    left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_file[0].stream)
+
+    # Create renogram from the predicted masks
+    left_activities, right_activities, total_activities = create_renogram(left_mask_alignments, right_mask_alignments)
+
+    roi_activity_array = np.concatenate([left_activities, right_activities, total_activities])
+
+    # Predict CKD stage with SVM model
+    predicted, probabilities = run_single_classification_svm(roi_activity_array)
+
+    response = (
+        supabase_client.table("analysis")
+        .insert({"user_id": user_info.user.id,
+                 "ckd_stage_prediction": predicted,
+                 "probabilities": probabilities.tolist()}).execute()
+    )
+
+    print(response)
+
+    return jsonify({'message': 'SVM classify endpoint', "id": response.data[0]["id"]}), 200
