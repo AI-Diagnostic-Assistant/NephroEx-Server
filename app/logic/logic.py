@@ -9,27 +9,6 @@ import joblib
 
 from app.logic.CNN import Simple3DCNN
 
-
-def create_composite_image(files):
-    pixel_data_list = []
-
-    for file in files:
-        # Read the DICOM file from the file storage object
-        ds = pydicom.dcmread(file)
-        pixel_array = ds.pixel_array.astype(float)
-        pixel_data_list.append(pixel_array)
-
-    # Stack the pixel arrays along a new axis (frames)
-    pixel_data = np.stack(pixel_data_list, axis=0)
-
-    # Create composite image by summing all frames
-    composite_image = np.sum(pixel_data, axis=1)
-    composite_image = composite_image.squeeze()  # Remove singleton dimensions
-    composite_image_normalized = composite_image / np.max(composite_image)
-
-    return composite_image_normalized
-
-
 def save_image_to_bytes(image_array):
     buf = io.BytesIO()
     plt.imsave(buf, image_array, cmap='gray', format='png')
@@ -74,12 +53,9 @@ def run_single_classification_svm(roi_activity_array):
 
     predicted_class = int(predicted_class)
 
-    print(f"Predicted class: {predicted_class}")
-    print(f"Output probabilities: {probabilities}")
-
     return predicted_class, probabilities
 
-def create_composite_image_test(path: str):
+def create_composite_image(path: str):
     pixel_data_list = []
 
     img = load_image(path)
@@ -103,7 +79,7 @@ def create_composite_image_test(path: str):
 def load_image(path: str):
     dicom = pydicom.dcmread(path)
     img = dicom.pixel_array.astype(np.float32)
-    img /= np.max(img)  # Normalize
+    img /= np.max(img)
 
     return img
 
@@ -116,7 +92,6 @@ def predict_kidney_masks(composite_image):
 
     image_tensor = torch.tensor(composite_image).permute(2, 0, 1).unsqueeze(0).float()
 
-    # Get prediction
     with torch.no_grad():
         pred_masks = unet_model(image_tensor)
         pred_left_mask = (pred_masks[:, 0, :, :] > 0.5).cpu().numpy().squeeze()
@@ -134,8 +109,6 @@ def align_masks_over_frames(left_kidney_mask, right_kidney_mask, dcm_file_path):
 
     ds = pydicom.dcmread(dcm_file_path)
 
-
-    # Normalize the predicted kidney masks to range [0, 255]
     left_kidney_mask = (left_kidney_mask * 255).astype(np.uint8)
     right_kidney_mask = (right_kidney_mask * 255).astype(np.uint8)
 
@@ -204,14 +177,7 @@ def compute_activity(image):
 
 
 def visualize_masks(image, left_mask, right_mask):
-    """
-    Visualize the original image along with left and right kidney masks.
 
-    Args:
-        image (np.ndarray): The original composite image (e.g., shape (H, W, 3)).
-        left_mask (np.ndarray): The left kidney mask (binary mask, shape (H, W)).
-        right_mask (np.ndarray): The right kidney mask (binary mask, shape (H, W)).
-    """
     plt.figure(figsize=(15, 8))
 
     # Display the original image

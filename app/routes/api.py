@@ -1,12 +1,11 @@
 import os
 
 import numpy as np
-import torch
 from flask import request, jsonify, Blueprint
 import uuid
 from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, \
-    run_single_classification_svm, create_composite_image_test, load_image, predict_kidney_masks, create_renogram, \
-    align_masks_over_frames, visualize_masks
+    run_single_classification_svm, predict_kidney_masks, create_renogram, \
+    align_masks_over_frames
 from app.client import create_sb_client, authenticate_request
 
 api = Blueprint('api', __name__)
@@ -103,7 +102,7 @@ def classify_svm(supabase_client, user_info):
     print("Type of files: ", type(dicom_file[0]))
 
     # Create composite image of the request file
-    composite_image = create_composite_image_test(dicom_file[0].stream)
+    composite_image = create_composite_image(dicom_file[0].stream)
 
     # Reset the stream pointer
     dicom_file[0].stream.seek(0)
@@ -118,7 +117,6 @@ def classify_svm(supabase_client, user_info):
 
     # Create renogram from the predicted masks
     left_activities, right_activities, total_activities = create_renogram(left_mask_alignments, right_mask_alignments)
-
     roi_activity_array = np.concatenate([left_activities, right_activities, total_activities])
 
     # Predict CKD stage with SVM model
