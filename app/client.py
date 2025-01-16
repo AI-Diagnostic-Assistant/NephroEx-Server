@@ -9,6 +9,12 @@ def create_sb_client():
     return create_client(url, key)
 
 
+def create_service_account_client():
+    url: str = 'https://lwybipvgkqqcuevmabdl.supabase.co'
+    key: str = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3eWJpcHZna3FxY3Vldm1hYmRsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcyOTg2MTY2MywiZXhwIjoyMDQ1NDM3NjYzfQ.pMjAsxj8xM57VlFcJQ4zXR_XIoXkhJ-f64fkwsjZ9xQ'
+    return create_client(url, key)
+
+
 def authenticate_user(supabase_client):
     """Helper function to authenticate a user using the Authorization header."""
     auth_header = request.headers.get('Authorization')
@@ -35,7 +41,10 @@ def authenticate_request(func):
 
     @wraps(func)
     def wrapper(*args, **kwargs):
-        supabase_client = create_sb_client()
+        #Have to change this perhaps
+        #supabase_client = create_sb_client()
+        supabase_client = create_service_account_client()
+
         user_info, error_response, status_code = authenticate_user(supabase_client)
         if error_response:
             return error_response, status_code

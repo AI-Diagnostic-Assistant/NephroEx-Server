@@ -1,3 +1,5 @@
+import uuid
+
 import pydicom
 import numpy as np
 import matplotlib.pyplot as plt
@@ -6,12 +8,13 @@ import torch
 import os
 import cv2
 import joblib
-
+from PIL import Image
 from app.logic.CNN import Simple3DCNN
 
-def save_image_to_bytes(image_array):
+
+def save_image_to_bytes(image):
     buf = io.BytesIO()
-    plt.imsave(buf, image_array, cmap='gray', format='png')
+    image.save(buf, format="PNG")
     buf.seek(0)
     return buf
 
@@ -55,6 +58,7 @@ def run_single_classification_svm(roi_activity_array):
 
     return predicted_class, probabilities
 
+
 def create_composite_image(path: str):
     pixel_data_list = []
 
@@ -71,7 +75,6 @@ def create_composite_image(path: str):
     # Convert to 3-channel RGB by repeating the grayscale channel
     composite_image_normalized = np.expand_dims(composite_image_normalized, axis=-1)
     composite_image_normalized = np.repeat(composite_image_normalized, 3, axis=-1)
-
 
     return composite_image_normalized
 
@@ -105,7 +108,6 @@ def align_masks_over_frames(left_kidney_mask, right_kidney_mask, dcm_file_path):
     right_mask_alignments = []
 
     print("dicom file path", dcm_file_path)
-
 
     ds = pydicom.dcmread(dcm_file_path)
 
@@ -160,24 +162,24 @@ def create_renogram(left_mask_alignments, right_mask_alignments):
         right_activities.append(right_activity)
         total_activities.append(left_activity + right_activity)
 
-    #plt.figure()
-    #plt.plot(left_activities, label="Left Kidney Activity")
-    #plt.plot(right_activities, label="Right Kidney Activity")
-    #plt.plot(total_activities, label="Total Activity (Left + Right)")
-    #plt.xlabel("Frame Index")
-    #plt.ylabel("Activity (Mean Intensity)")
-    #plt.title(f"Renogram")
-    #plt.legend()
-    #plt.show()
+    # plt.figure()
+    # plt.plot(left_activities, label="Left Kidney Activity")
+    # plt.plot(right_activities, label="Right Kidney Activity")
+    # plt.plot(total_activities, label="Total Activity (Left + Right)")
+    # plt.xlabel("Frame Index")
+    # plt.ylabel("Activity (Mean Intensity)")
+    # plt.title(f"Renogram")
+    # plt.legend()
+    # plt.show()
 
     return np.array(left_activities), np.array(right_activities), np.array(total_activities)
+
 
 def compute_activity(image):
     return np.mean(image)
 
 
 def visualize_masks(image, left_mask, right_mask):
-
     plt.figure(figsize=(15, 8))
 
     # Display the original image
@@ -227,3 +229,54 @@ def perform_svm_analysis(dicom_file):
     svm_predicted, svm_probabilities = run_single_classification_svm(roi_activity_array)
 
     return svm_predicted, svm_probabilities, roi_activity_array
+
+
+def group_2_min_frames(dicom_file_stream):
+    dicom_data = pydicom.dcmread(dicom_file_stream)
+    frames = dicom_data.pixel_array
+
+    if len(frames) != 180:
+        raise ValueError("Expected 180 frames in the DICOM file.")
+
+    # Group into 15 summed frames
+    grouped_frames = []
+    for i in range(0, 180, 12):
+        group = frames[i:i + 12]
+        summed_frame = np.sum(group, axis=0)
+        grouped_frames.append(summed_frame)
+
+    return grouped_frames
+
+
+def save_summed_frames_to_storage(grouped_frames, sb_client):
+    storage_ids = []
+
+    try:
+        for idx, frame in enumerate(grouped_frames):
+            normalized_frame = (255 * (frame - frame.min()) / (frame.max() - frame.min())).astype(np.uint8)
+            img = Image.fromarray(normalized_frame)
+
+            image_io = save_image_to_bytes(img)
+
+            # Upload to Supabase storage
+            storage_id = uuid.uuid4()
+            file_name = f"{storage_id}.png"
+
+            sb_client.storage.from_('grouped-dicom-frames').upload(file_name, image_io.getvalue(), file_options={'content-type': 'image/png'})
+            storage_ids.append(file_name)
+
+        return storage_ids
+
+    except Exception as e:
+        raise RuntimeError(f"Error processing DICOM file: {str(e)}")
+
+
+def visualize_grouped_frames(grouped_frames):
+    num_frames = len(grouped_frames)
+    fig, axes = plt.subplots(1, num_frames, figsize=(20, 5))
+    for i, frame in enumerate(grouped_frames):
+        normalized_frame = (255 * (frame - frame.min()) / (frame.max() - frame.min())).astype(np.uint8)
+        axes[i].imshow(normalized_frame, cmap="gray")
+        axes[i].set_title(f"Frame Group {i + 1}")
+        axes[i].axis("off")
+    plt.show()

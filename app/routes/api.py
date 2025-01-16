@@ -1,11 +1,6 @@
-import os
-
-import numpy as np
 from flask import request, jsonify, Blueprint
 import uuid
-from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, \
-    run_single_classification_svm, predict_kidney_masks, create_renogram, \
-    align_masks_over_frames, perform_svm_analysis
+from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage
 from app.client import create_sb_client, authenticate_request
 
 api = Blueprint('api', __name__)
@@ -34,6 +29,7 @@ def get_composite_images():
 @api.route('/process_dicom', methods=['POST'])
 def process_dicom():
     supabase_client = create_sb_client()
+
     if 'files' not in request.files:
         return jsonify({'error': 'No files part in the request'}), 400
     files = request.files.getlist('files')
@@ -51,7 +47,7 @@ def process_dicom():
 
         # Upload to Supabase Storage
         bucket = supabase_client.storage.from_('composite-images')
-        bucket.upload(image_filename, image_io.getvalue(), file_options={'content-type': 'image/png'})
+        bucket.upload(image_filename, image_io, file_options={'content-type': 'image/png'})
         public_url = bucket.get_public_url(image_filename)
 
         data = {
@@ -65,50 +61,29 @@ def process_dicom():
         return jsonify({'error': str(e)}), 500
 
 
-@api.route('/classify_cnn', methods=['POST'])
-@authenticate_request
-def classify_cnn(supabase_client, user_info):
-    if 'file' not in request.files:
-        return jsonify({'error': 'No files part in the request'}), 400
-
-    if "patientId" not in request.form:
-        return jsonify({'error': 'No patientId in the request'}), 400
-
-    patientId = request.form.get('patientId')
-    file = request.files.getlist('file')
-
-    if len(file) == 0:
-        return jsonify({'error': 'No files selected'}), 400
-
-    print(file[0])
-    print("Type of files: ", type(file[0]))
-    predicted, probabilities = run_single_classification_cnn(file[0].stream)
-
-    response = (
-        supabase_client.table("analysis")
-        .insert({"user_id": user_info.user.id,
-                 "ckd_stage_prediction": predicted,
-                 "probabilities": probabilities.tolist(),
-                 "patient_id": patientId}).execute()
-    )
-
-    print(response)
-
-    return jsonify({'message': 'Classify endpoint', "id": response.data[0]["id"]}), 200
-
-
 @api.route('/classify', methods=['POST'])
 @authenticate_request
 def classify(supabase_client, user_info):
     if 'file' not in request.files:
         return jsonify({'error': 'No files part in the request'}), 400
 
+    if "patientId" not in request.form:
+        return jsonify({'error': 'No patientId in the request'}), 400
+
     dicom_file = request.files.getlist('file')
+    patient_id = request.form.get('patientId')
     if len(dicom_file) == 0:
         return jsonify({'error': 'No files selected'}), 400
 
-    print(dicom_file[0])
-    print("Type of files: ", type(dicom_file[0]))
+    grouped_frames = group_2_min_frames(dicom_file[0].stream)
+
+    dicom_file[0].stream.seek(0)
+
+    storage_ids = save_summed_frames_to_storage(grouped_frames, supabase_client)
+
+    dicom_file[0].stream.seek(0)
+
+    print("Storage_ids", storage_ids)
 
     cnn_predicted, cnn_probabilities = run_single_classification_cnn(dicom_file[0].stream)
 
@@ -123,12 +98,15 @@ def classify(supabase_client, user_info):
         analysis_response = (
             supabase_client.table("analysis")
             .insert({
-                "user_id": user_info.user.id,
                 "ckd_stage_prediction": cnn_predicted,
                 "probabilities": cnn_probabilities.tolist(),
+                "patient_id": patient_id,
+                "dicom_storage_ids": storage_ids
             })
             .execute()
         )
+
+        print("Analysis response", analysis_response)
 
         if not analysis_response.data or len(analysis_response.data) == 0:
             return jsonify({'error': 'Failed to insert into analysis table'}), 500
@@ -156,7 +134,6 @@ def classify(supabase_client, user_info):
 
         if not classification_response.data or len(classification_response.data) < 2:
             return jsonify({'error': 'Failed to insert classifications'}), 500
-
 
         svm_classification_id = classification_response.data[0]["id"]
         cnn_classification_id = classification_response.data[1]["id"]
