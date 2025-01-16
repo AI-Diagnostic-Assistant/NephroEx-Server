@@ -160,15 +160,15 @@ def create_renogram(left_mask_alignments, right_mask_alignments):
         right_activities.append(right_activity)
         total_activities.append(left_activity + right_activity)
 
-    plt.figure()
-    plt.plot(left_activities, label="Left Kidney Activity")
-    plt.plot(right_activities, label="Right Kidney Activity")
-    plt.plot(total_activities, label="Total Activity (Left + Right)")
-    plt.xlabel("Frame Index")
-    plt.ylabel("Activity (Mean Intensity)")
-    plt.title(f"Renogram")
-    plt.legend()
-    plt.show()
+    #plt.figure()
+    #plt.plot(left_activities, label="Left Kidney Activity")
+    #plt.plot(right_activities, label="Right Kidney Activity")
+    #plt.plot(total_activities, label="Total Activity (Left + Right)")
+    #plt.xlabel("Frame Index")
+    #plt.ylabel("Activity (Mean Intensity)")
+    #plt.title(f"Renogram")
+    #plt.legend()
+    #plt.show()
 
     return np.array(left_activities), np.array(right_activities), np.array(total_activities)
 
@@ -200,3 +200,30 @@ def visualize_masks(image, left_mask, right_mask):
 
     plt.tight_layout()
     plt.show()
+
+
+def perform_svm_analysis(dicom_file):
+    # Create composite image of the request file
+    composite_image = create_composite_image(dicom_file[0].stream)
+
+    # Reset the stream pointer
+    dicom_file[0].stream.seek(0)
+
+    # Predict kidney masks
+    left_mask, right_mask = predict_kidney_masks(composite_image)
+
+    # visualize_masks(composite_image, left_mask, right_mask)
+
+    # align masks over all frames in the original dicom file
+    left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_file[0].stream)
+
+    # Create renogram from the predicted masks
+    left_activities, right_activities, total_activities = create_renogram(left_mask_alignments, right_mask_alignments)
+    roi_activity_array = [left_activities.tolist(), right_activities.tolist(), total_activities.tolist()]
+
+    # print("roi_activity_array: ", roi_activity_array)
+
+    # Predict CKD stage with SVM model
+    svm_predicted, svm_probabilities = run_single_classification_svm(roi_activity_array)
+
+    return svm_predicted, svm_probabilities, roi_activity_array

@@ -5,10 +5,11 @@ from flask import request, jsonify, Blueprint
 import uuid
 from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, \
     run_single_classification_svm, predict_kidney_masks, create_renogram, \
-    align_masks_over_frames
+    align_masks_over_frames, perform_svm_analysis
 from app.client import create_sb_client, authenticate_request
 
 api = Blueprint('api', __name__)
+
 
 @api.route('/')
 @api.route('/index')
@@ -21,6 +22,7 @@ def get_users():
     supabase_client = create_sb_client()
     response = supabase_client.table('profiles').select('*').execute()
     return response.data
+
 
 @api.route('/compositeImages')
 def get_composite_images():
@@ -94,9 +96,10 @@ def classify_cnn(supabase_client, user_info):
 
     return jsonify({'message': 'Classify endpoint', "id": response.data[0]["id"]}), 200
 
-@api.route('/classify_svm', methods=['POST'])
+
+@api.route('/classify', methods=['POST'])
 @authenticate_request
-def classify_svm(supabase_client, user_info):
+def classify(supabase_client, user_info):
     if 'file' not in request.files:
         return jsonify({'error': 'No files part in the request'}), 400
 
@@ -107,34 +110,78 @@ def classify_svm(supabase_client, user_info):
     print(dicom_file[0])
     print("Type of files: ", type(dicom_file[0]))
 
-    # Create composite image of the request file
-    composite_image = create_composite_image(dicom_file[0].stream)
+    cnn_predicted, cnn_probabilities = run_single_classification_cnn(dicom_file[0].stream)
 
-    # Reset the stream pointer
     dicom_file[0].stream.seek(0)
 
-    # Predict kidney masks
-    left_mask, right_mask = predict_kidney_masks(composite_image)
+    svm_predicted, svm_probabilities, roi_activity_array = perform_svm_analysis(dicom_file)
 
-    #visualize_masks(composite_image, left_mask, right_mask)
+    svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
+    cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
 
-    #align masks over all frames in the original dicom file
-    left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_file[0].stream)
+    try:
+        analysis_response = (
+            supabase_client.table("analysis")
+            .insert({
+                "user_id": user_info.user.id,
+                "ckd_stage_prediction": cnn_predicted,
+                "probabilities": cnn_probabilities.tolist(),
+            })
+            .execute()
+        )
 
-    # Create renogram from the predicted masks
-    left_activities, right_activities, total_activities = create_renogram(left_mask_alignments, right_mask_alignments)
-    roi_activity_array = np.concatenate([left_activities, right_activities, total_activities])
+        if not analysis_response.data or len(analysis_response.data) == 0:
+            return jsonify({'error': 'Failed to insert into analysis table'}), 500
 
-    # Predict CKD stage with SVM model
-    predicted, probabilities = run_single_classification_svm(roi_activity_array)
+        analysis_id = analysis_response.data[0]["id"]
 
-    response = (
-        supabase_client.table("analysis")
-        .insert({"user_id": user_info.user.id,
-                 "ckd_stage_prediction": predicted,
-                 "probabilities": probabilities.tolist()}).execute()
-    )
+        classification_response = (
+            supabase_client.table("classification")
+            .insert([
+                {
+                    "analysis_id": analysis_id,
+                    "prediction": svm_predicted_label,
+                    "confidence": svm_probabilities.tolist(),
+                    "type": "svm",
+                },
+                {
+                    "analysis_id": analysis_id,
+                    "prediction": cnn_predicted_label,
+                    "confidence": cnn_probabilities.tolist(),
+                    "type": "cnn",
+                },
+            ])
+            .execute()
+        )
 
-    print(response)
+        if not classification_response.data or len(classification_response.data) < 2:
+            return jsonify({'error': 'Failed to insert classifications'}), 500
 
-    return jsonify({'message': 'SVM classify endpoint', "id": response.data[0]["id"]}), 200
+
+        svm_classification_id = classification_response.data[0]["id"]
+        cnn_classification_id = classification_response.data[1]["id"]
+
+        explanation_response = (
+            supabase_client.table("explanation")
+            .insert([
+                {
+                    "classification_id": svm_classification_id,
+                    "description": "This is a description of the Renogram technique",
+                    "roi_activity": roi_activity_array,
+                },
+                {
+                    "classification_id": cnn_classification_id,
+                    "technique": "Grad-CAM",
+                    "description": "This is a description of the GradCAM technique",
+                }
+            ])
+            .execute()
+        )
+
+        if not explanation_response.data or len(explanation_response.data) < 2:
+            return jsonify({'error': 'Failed to insert explanations'}), 500
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    return jsonify({'message': 'classify endpoint', "id": analysis_id}), 200
