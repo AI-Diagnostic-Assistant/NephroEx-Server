@@ -69,7 +69,12 @@ def classify_cnn(supabase_client, user_info):
     if 'file' not in request.files:
         return jsonify({'error': 'No files part in the request'}), 400
 
+    if "patientId" not in request.form:
+        return jsonify({'error': 'No patientId in the request'}), 400
+
+    patientId = request.form.get('patientId')
     file = request.files.getlist('file')
+
     if len(file) == 0:
         return jsonify({'error': 'No files selected'}), 400
 
@@ -81,7 +86,8 @@ def classify_cnn(supabase_client, user_info):
         supabase_client.table("analysis")
         .insert({"user_id": user_info.user.id,
                  "ckd_stage_prediction": predicted,
-                 "probabilities": probabilities.tolist()}).execute()
+                 "probabilities": probabilities.tolist(),
+                 "patient_id": patientId}).execute()
     )
 
     print(response)
