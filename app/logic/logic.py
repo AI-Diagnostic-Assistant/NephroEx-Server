@@ -62,9 +62,12 @@ def run_single_classification_svm(roi_activity_array):
 def create_composite_image(path: str):
     pixel_data_list = []
 
-    img = load_image(path)
+    #img = load_image(path)
 
-    pixel_data_list.append(img)
+    ds = pydicom.dcmread(path)
+    pixel_array = ds.pixel_array.astype(float)
+    pixel_data_list.append(pixel_array)
+
     pixel_data = np.stack(pixel_data_list, axis=0)
 
     # Create composite image by summing all frames
@@ -72,9 +75,15 @@ def create_composite_image(path: str):
     composite_image = composite_image.squeeze()  # Remove singleton dimensions
     composite_image_normalized = composite_image / np.max(composite_image)
 
+    print(f"Composite Image Shape: {composite_image_normalized.shape}")
+    print(f"Composite Image Dtype: {composite_image_normalized.dtype}")
+
     # Convert to 3-channel RGB by repeating the grayscale channel
     composite_image_normalized = np.expand_dims(composite_image_normalized, axis=-1)
     composite_image_normalized = np.repeat(composite_image_normalized, 3, axis=-1)
+
+    print(f"Composite Image Shape: {composite_image_normalized.shape}")
+    print(f"Composite Image Dtype: {composite_image_normalized.dtype}")
 
     return composite_image_normalized
 
@@ -90,13 +99,18 @@ def load_image(path: str):
 def predict_kidney_masks(composite_image):
     script_dir = os.path.dirname(__file__)
     unet_model_path = os.path.join(script_dir, "../../models/segmentation/fold_1_pretrained_unet_model.pth")
-    unet_model = torch.load(unet_model_path)  # Load the entire model
+    unet_model = torch.load(unet_model_path, map_location=torch.device('cpu'))  # Load the entire model
     unet_model.eval()
 
     image_tensor = torch.tensor(composite_image).permute(2, 0, 1).unsqueeze(0).float()
 
+    print("Image Tensor:", image_tensor.shape, image_tensor.min().item(), image_tensor.max().item())  # Debug
+
     with torch.no_grad():
         pred_masks = unet_model(image_tensor)
+
+        print("Raw Predictions (Min, Max):", pred_masks.min().item(), pred_masks.max().item())  # Debug
+
         pred_left_mask = (pred_masks[:, 0, :, :] > 0.5).cpu().numpy().squeeze()
         pred_right_mask = (pred_masks[:, 1, :, :] > 0.5).cpu().numpy().squeeze()
 
@@ -107,16 +121,18 @@ def align_masks_over_frames(left_kidney_mask, right_kidney_mask, dcm_file_path):
     left_mask_alignments = []
     right_mask_alignments = []
 
-    print("dicom file path", dcm_file_path)
-
     ds = pydicom.dcmread(dcm_file_path)
 
-    left_kidney_mask = (left_kidney_mask * 255).astype(np.uint8)
-    right_kidney_mask = (right_kidney_mask * 255).astype(np.uint8)
+    global_max = max(np.max(ds.pixel_array[frame_idx]) for frame_idx in range(ds.NumberOfFrames))
+
+    #left_kidney_mask = (left_kidney_mask * 255).astype(np.uint8)
+    #right_kidney_mask = (right_kidney_mask * 255).astype(np.uint8)
 
     for frame_idx in range(ds.NumberOfFrames):
-        pixel_array = ds.pixel_array[frame_idx].astype(np.float32)
-        normalized_pixel_array = (pixel_array / np.max(pixel_array) * 255).astype(np.uint8)
+        pixel_array = ds.pixel_array[frame_idx]
+        #normalized_pixel_array = (pixel_array / np.max(pixel_array) * 255).astype(np.uint8)
+        normalized_pixel_array = (pixel_array / global_max * 255).astype(np.uint8)
+
 
         # Ensure the kidney masks are in the range [0, 1]
         if left_kidney_mask.max() <= 1.0 and right_kidney_mask.max() <= 1.0:
@@ -162,16 +178,6 @@ def create_renogram(left_mask_alignments, right_mask_alignments):
         right_activities.append(right_activity)
         total_activities.append(left_activity + right_activity)
 
-    # plt.figure()
-    # plt.plot(left_activities, label="Left Kidney Activity")
-    # plt.plot(right_activities, label="Right Kidney Activity")
-    # plt.plot(total_activities, label="Total Activity (Left + Right)")
-    # plt.xlabel("Frame Index")
-    # plt.ylabel("Activity (Mean Intensity)")
-    # plt.title(f"Renogram")
-    # plt.legend()
-    # plt.show()
-
     return np.array(left_activities), np.array(right_activities), np.array(total_activities)
 
 
@@ -214,7 +220,7 @@ def perform_svm_analysis(dicom_file):
     # Predict kidney masks
     left_mask, right_mask = predict_kidney_masks(composite_image)
 
-    # visualize_masks(composite_image, left_mask, right_mask)
+    visualize_masks(composite_image, left_mask, right_mask)
 
     # align masks over all frames in the original dicom file
     left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_file[0].stream)
