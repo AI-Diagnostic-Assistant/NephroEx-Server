@@ -222,7 +222,7 @@ def perform_svm_analysis(dicom_file, supabase_client):
 
     transparent_contour_image = create_ROI_contours_png(left_mask, right_mask)
 
-    save_png(transparent_contour_image, "roi_contours", supabase_client)
+    roi_contour_object_path = save_png(transparent_contour_image, "roi_contours", supabase_client)
 
     visualize_masks(composite_image, left_mask, right_mask)
 
@@ -238,7 +238,7 @@ def perform_svm_analysis(dicom_file, supabase_client):
     # Predict CKD stage with SVM model
     svm_predicted, svm_probabilities = run_single_classification_svm(roi_activity_array)
 
-    return svm_predicted, svm_probabilities, roi_activity_array
+    return svm_predicted, svm_probabilities, roi_activity_array, roi_contour_object_path
 
 
 def group_2_min_frames(dicom_file_stream):

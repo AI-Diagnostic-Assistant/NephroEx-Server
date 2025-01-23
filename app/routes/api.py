@@ -89,7 +89,7 @@ def classify(supabase_client, user_info):
 
     dicom_file[0].stream.seek(0)
 
-    svm_predicted, svm_probabilities, roi_activity_array = perform_svm_analysis(dicom_file, supabase_client)
+    svm_predicted, svm_probabilities, roi_activity_array, roi_contour_object_path = perform_svm_analysis(dicom_file, supabase_client)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
@@ -101,7 +101,8 @@ def classify(supabase_client, user_info):
                 "ckd_stage_prediction": cnn_predicted,
                 "probabilities": cnn_probabilities.tolist(),
                 "patient_id": patient_id,
-                "dicom_storage_ids": storage_ids
+                "dicom_storage_ids": storage_ids,
+                "roi_contour_object_path": roi_contour_object_path,
             })
             .execute()
         )
