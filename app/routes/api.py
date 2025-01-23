@@ -89,7 +89,7 @@ def classify(supabase_client, user_info):
 
     dicom_file[0].stream.seek(0)
 
-    svm_predicted, svm_probabilities, roi_activity_array = perform_svm_analysis(dicom_file)
+    svm_predicted, svm_probabilities, roi_activity_array = perform_svm_analysis(dicom_file, supabase_client)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"

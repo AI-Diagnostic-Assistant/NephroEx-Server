@@ -210,7 +210,7 @@ def visualize_masks(image, left_mask, right_mask):
     plt.show()
 
 
-def perform_svm_analysis(dicom_file):
+def perform_svm_analysis(dicom_file, supabase_client):
     # Create composite image of the request file
     composite_image = create_composite_image(dicom_file[0].stream)
 
@@ -219,6 +219,10 @@ def perform_svm_analysis(dicom_file):
 
     # Predict kidney masks
     left_mask, right_mask = predict_kidney_masks(composite_image)
+
+    transparent_contour_image = create_ROI_contours_png(left_mask, right_mask)
+
+    save_png(transparent_contour_image, "roi_contours", supabase_client)
 
     visualize_masks(composite_image, left_mask, right_mask)
 
@@ -306,3 +310,16 @@ def create_ROI_contours_png(mask_left, mask_right):
     rgba_image[:, :, 3] = rgba_image[:, :, 0]
 
     return rgba_image
+
+def save_png(image, bucket: str, supabase_client):
+    img = Image.fromarray(image)
+
+    image_io = save_image_to_bytes(img)
+
+    # Upload to Supabase storage
+    storage_id = uuid.uuid4()
+    file_name = f"{storage_id}.png"
+
+    response = supabase_client.storage.from_(bucket).upload(file_name, image_io.getvalue(),
+                                                         file_options={'content-type': 'image/png'})
+    return response.path
