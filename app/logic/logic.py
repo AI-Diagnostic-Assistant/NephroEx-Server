@@ -264,16 +264,10 @@ def save_summed_frames_to_storage(grouped_frames, sb_client):
     try:
         for idx, frame in enumerate(grouped_frames):
             normalized_frame = (255 * (frame - frame.min()) / (frame.max() - frame.min())).astype(np.uint8)
-            img = Image.fromarray(normalized_frame)
 
-            image_io = save_image_to_bytes(img)
+            path = save_png(normalized_frame, 'grouped-dicom-frames', sb_client)
 
-            # Upload to Supabase storage
-            storage_id = uuid.uuid4()
-            file_name = f"{storage_id}.png"
-
-            sb_client.storage.from_('grouped-dicom-frames').upload(file_name, image_io.getvalue(), file_options={'content-type': 'image/png'})
-            storage_ids.append(file_name)
+            storage_ids.append(path)
 
         return storage_ids
 
