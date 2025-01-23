@@ -286,3 +286,23 @@ def visualize_grouped_frames(grouped_frames):
         axes[i].set_title(f"Frame Group {i + 1}")
         axes[i].axis("off")
     plt.show()
+
+def create_ROI_contours_png(mask_left, mask_right):
+    # Initialize the RGBA image for transparency
+    height, width = mask_left.shape
+    rgba_image = np.zeros((height, width, 4), dtype=np.uint8)
+
+    # Find contours of the left and right kidney masks
+    mask_left_uint8 = (mask_left * 255).astype(np.uint8)
+    mask_right_uint8 = (mask_right * 255).astype(np.uint8)
+
+    left_contours, _ = cv2.findContours(mask_left_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    right_contours, _ = cv2.findContours(mask_right_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Draw the contours on the original image
+    cv2.drawContours(rgba_image, left_contours, -1, (255, 0, 0), 1)
+    cv2.drawContours(rgba_image, right_contours, -1, (255, 0, 0), 1)
+
+    rgba_image[:, :, 3] = rgba_image[:, :, 0]
+
+    return rgba_image
