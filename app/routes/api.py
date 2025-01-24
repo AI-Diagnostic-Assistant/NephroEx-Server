@@ -1,6 +1,10 @@
+import io
+
+import pydicom
 from flask import request, jsonify, Blueprint
 import uuid
-from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage
+from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, \
+    perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage, save_total_dicom
 from app.client import create_sb_client, authenticate_request
 
 api = Blueprint('api', __name__)
@@ -63,7 +67,7 @@ def process_dicom():
 
 @api.route('/classify', methods=['POST'])
 @authenticate_request
-def classify(supabase_client, user_info):
+def classify(supabase_client):
     if 'file' not in request.files:
         return jsonify({'error': 'No files part in the request'}), 400
 
@@ -72,28 +76,28 @@ def classify(supabase_client, user_info):
 
     dicom_file = request.files.getlist('file')
     patient_id = request.form.get('patientId')
+
     if len(dicom_file) == 0:
         return jsonify({'error': 'No files selected'}), 400
 
-    grouped_frames = group_2_min_frames(dicom_file[0].stream)
+    #Save stream to memory and read one time
+    dicom_stream = dicom_file[0].stream.read()
+    dicom_read = pydicom.dcmread(io.BytesIO(dicom_stream))
 
-    dicom_file[0].stream.seek(0)
+    dicom_storage_id = save_total_dicom(dicom_stream, supabase_client)
+
+    grouped_frames = group_2_min_frames(dicom_read)
 
     storage_ids = save_summed_frames_to_storage(grouped_frames, supabase_client)
 
-    dicom_file[0].stream.seek(0)
-
-    print("Storage_ids", storage_ids)
-
-    cnn_predicted, cnn_probabilities = run_single_classification_cnn(dicom_file[0].stream)
-
-    dicom_file[0].stream.seek(0)
-
-    svm_predicted, svm_probabilities, roi_activity_array, roi_contour_object_path = perform_svm_analysis(dicom_file, supabase_client)
+    #CNN and SVM predictions
+    cnn_predicted, cnn_probabilities = run_single_classification_cnn(dicom_read)
+    svm_predicted, svm_probabilities, roi_activity_array = perform_svm_analysis(dicom_read)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
 
+    #Insert into supabase database
     try:
         analysis_response = (
             supabase_client.table("analysis")
@@ -102,12 +106,10 @@ def classify(supabase_client, user_info):
                 "probabilities": cnn_probabilities.tolist(),
                 "patient_id": patient_id,
                 "dicom_storage_ids": storage_ids,
-                "roi_contour_object_path": roi_contour_object_path,
+                "patient_dicom_storage_id": dicom_storage_id
             })
             .execute()
         )
-
-        print("Analysis response", analysis_response)
 
         if not analysis_response.data or len(analysis_response.data) == 0:
             return jsonify({'error': 'Failed to insert into analysis table'}), 500

@@ -33,7 +33,7 @@ def authenticate_user(supabase_client):
         return None, jsonify({'error': 'Unauthorized'}), 403
 
     supabase_client.postgrest.auth(access_token)
-    return user_info, None, None
+    return None, None
 
 
 def authenticate_request(func):
@@ -45,9 +45,9 @@ def authenticate_request(func):
         #supabase_client = create_sb_client()
         supabase_client = create_service_account_client()
 
-        user_info, error_response, status_code = authenticate_user(supabase_client)
+        error_response, status_code = authenticate_user(supabase_client)
         if error_response:
             return error_response, status_code
-        return func(supabase_client, user_info, *args, **kwargs)
+        return func(supabase_client, *args, **kwargs)
 
     return wrapper
