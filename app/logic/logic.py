@@ -189,7 +189,7 @@ def visualize_masks(image, left_mask, right_mask):
     plt.show()
 
 
-def perform_svm_analysis(dicom_read):
+def perform_svm_analysis(dicom_read, supabase_client):
     # Create composite image of the request file
     composite_image = create_composite_image(dicom_read)
 
@@ -208,7 +208,7 @@ def perform_svm_analysis(dicom_read):
     # Predict CKD stage with SVM model
     svm_predicted, svm_probabilities = run_single_classification_svm(roi_activity_array)
 
-    return svm_predicted, svm_probabilities, roi_activity_array
+    return svm_predicted, svm_probabilities, roi_activity_array, left_mask, right_mask
 
 
 def group_2_min_frames(dicom_read):
@@ -233,17 +233,10 @@ def save_summed_frames_to_storage(grouped_frames, sb_client):
     try:
         for idx, frame in enumerate(grouped_frames):
             normalized_frame = (255 * (frame - frame.min()) / (frame.max() - frame.min())).astype(np.uint8)
-            img = Image.fromarray(normalized_frame)
 
-            image_io = save_image_to_bytes(img)
+            path = save_png(normalized_frame, 'grouped-dicom-frames', sb_client)
 
-            # Upload to Supabase storage
-            storage_id = uuid.uuid4()
-            file_name = f"{storage_id}.png"
-
-            sb_client.storage.from_('grouped-dicom-frames').upload(file_name, image_io.getvalue(),
-                                                                   file_options={'content-type': 'image/png'})
-            storage_ids.append(file_name)
+            storage_ids.append(path)
 
         return storage_ids
 
@@ -275,3 +268,38 @@ def visualize_grouped_frames(grouped_frames):
         axes[i].set_title(f"Frame Group {i + 1}")
         axes[i].axis("off")
     plt.show()
+
+
+def create_ROI_contours_png(mask_left, mask_right):
+    # Initialize the RGBA image for transparency
+    height, width = mask_left.shape
+    rgba_image = np.zeros((height, width, 4), dtype=np.uint8)
+
+    # Find contours of the left and right kidney masks
+    mask_left_uint8 = (mask_left * 255).astype(np.uint8)
+    mask_right_uint8 = (mask_right * 255).astype(np.uint8)
+
+    left_contours, _ = cv2.findContours(mask_left_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    right_contours, _ = cv2.findContours(mask_right_uint8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Draw the contours on the original image
+    cv2.drawContours(rgba_image, left_contours, -1, (255, 0, 0), 1)
+    cv2.drawContours(rgba_image, right_contours, -1, (255, 0, 0), 1)
+
+    rgba_image[:, :, 3] = rgba_image[:, :, 0]
+
+    return rgba_image
+
+def save_png(image, bucket: str, supabase_client):
+    img = Image.fromarray(image)
+
+    image_io = save_image_to_bytes(img)
+
+    # Upload to Supabase storage
+    storage_id = uuid.uuid4()
+    file_name = f"{storage_id}.png"
+
+    response = supabase_client.storage.from_(bucket).upload(file_name, image_io.getvalue(),
+                                                         file_options={'content-type': 'image/png'})
+    return response.path
+

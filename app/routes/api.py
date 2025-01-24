@@ -4,7 +4,8 @@ import pydicom
 from flask import request, jsonify, Blueprint
 import uuid
 from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, \
-    perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage, save_total_dicom
+    perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage, save_total_dicom, create_ROI_contours_png, \
+    save_png
 from app.client import create_sb_client, authenticate_request
 
 api = Blueprint('api', __name__)
@@ -92,10 +93,14 @@ def classify(supabase_client):
 
     #CNN and SVM predictions
     cnn_predicted, cnn_probabilities = run_single_classification_cnn(dicom_read)
-    svm_predicted, svm_probabilities, roi_activity_array = perform_svm_analysis(dicom_read)
+    svm_predicted, svm_probabilities, roi_activity_array, left_mask, right_mask = perform_svm_analysis(dicom_read, supabase_client)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
+
+    #Create and upload ROI contours
+    transparent_contour_image = create_ROI_contours_png(left_mask, right_mask)
+    roi_contour_object_path = save_png(transparent_contour_image, "roi_contours", supabase_client)
 
     #Insert into supabase database
     try:
@@ -106,7 +111,8 @@ def classify(supabase_client):
                 "probabilities": cnn_probabilities.tolist(),
                 "patient_id": patient_id,
                 "dicom_storage_ids": storage_ids,
-                "patient_dicom_storage_id": dicom_storage_id
+                "patient_dicom_storage_id": dicom_storage_id,
+                "roi_contour_object_path": roi_contour_object_path
             })
             .execute()
         )
