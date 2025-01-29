@@ -112,7 +112,7 @@ def classify(supabase_client):
                 "patient_id": patient_id,
                 "dicom_storage_ids": storage_ids,
                 "patient_dicom_storage_id": dicom_storage_id,
-                "roi_contour_object_path": roi_contour_object_path
+                "roi_contour_object_path": roi_contour_object_path,
             })
             .execute()
         )
@@ -121,8 +121,6 @@ def classify(supabase_client):
             return jsonify({'error': 'Failed to insert into report table'}), 500
 
         report_id = report_response.data[0]["id"]
-
-        print("Report response", report_response)
 
         analysis_response = (
             supabase_client.table("analysis")
