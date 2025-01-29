@@ -57,3 +57,4 @@ opencv-python
 joblib
 segmentation_models_pytorch
 scikit-learn
+shap
