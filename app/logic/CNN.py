@@ -22,7 +22,7 @@ class Simple3DCNN(nn.Module):
 
         # Fully connected layers
         self.fc1 = nn.Linear(128 * 22 * 16 * 16, 256)
-        self.fc2 = nn.Linear(256, 5)
+        self.fc2 = nn.Linear(256, 2)
         self.softmax = nn.Softmax(dim=1)
 
     def forward(self, x):
