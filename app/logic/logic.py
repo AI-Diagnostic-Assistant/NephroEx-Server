@@ -30,8 +30,6 @@ def run_single_classification_cnn(dicom_read):
     model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
     model.eval()
 
-    # path = os.path.join(script_dir, '../../test/drsprg_001_POST.dcm')
-
     img = dicom_read.pixel_array.astype(np.float32)
     img /= np.max(img)  # Normalize
     volume_tensor = torch.tensor(img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
