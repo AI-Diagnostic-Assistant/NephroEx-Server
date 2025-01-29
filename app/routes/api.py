@@ -5,7 +5,7 @@ from flask import request, jsonify, Blueprint
 import uuid
 from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, \
     perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage, save_total_dicom, create_ROI_contours_png, \
-    save_png
+    save_png, perform_decision_tree_analysis
 from app.client import create_sb_client, authenticate_request
 
 api = Blueprint('api', __name__)
@@ -93,10 +93,12 @@ def classify(supabase_client):
 
     #CNN and SVM predictions
     cnn_predicted, cnn_probabilities = run_single_classification_cnn(dicom_read)
-    svm_predicted, svm_probabilities, roi_activity_array, left_mask, right_mask = perform_svm_analysis(dicom_read, supabase_client)
+    svm_predicted, svm_probabilities, roi_activity_array, left_mask, right_mask, total_activities = perform_svm_analysis(dicom_read, supabase_client)
+    decision_tree_predicted, decision_tree_probabilities, decision_tree_explanation, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
+    decision_tree_predicted_label = "healthy" if decision_tree_predicted == 0 else "sick"
 
     #Create and upload ROI contours
     transparent_contour_image = create_ROI_contours_png(left_mask, right_mask)
@@ -104,11 +106,9 @@ def classify(supabase_client):
 
     #Insert into supabase database
     try:
-        analysis_response = (
-            supabase_client.table("analysis")
+        report_response = (
+            supabase_client.table("report")
             .insert({
-                "ckd_stage_prediction": cnn_predicted,
-                "probabilities": cnn_probabilities.tolist(),
                 "patient_id": patient_id,
                 "dicom_storage_ids": storage_ids,
                 "patient_dicom_storage_id": dicom_storage_id,
@@ -117,25 +117,56 @@ def classify(supabase_client):
             .execute()
         )
 
-        if not analysis_response.data or len(analysis_response.data) == 0:
-            return jsonify({'error': 'Failed to insert into analysis table'}), 500
+        if not report_response.data or len(report_response.data) == 0:
+            return jsonify({'error': 'Failed to insert into report table'}), 500
 
-        analysis_id = analysis_response.data[0]["id"]
+        report_id = report_response.data[0]["id"]
+
+        print("Report response", report_response)
+
+        analysis_response = (
+            supabase_client.table("analysis")
+            .insert([
+                {
+                    "report_id": report_id,
+                    "category": "renogram",
+                    "roi_activity": roi_activity_array,
+                },
+                {
+                    "report_id": report_id,
+                    "category": "image",
+                },
+
+            ])
+            .execute()
+        )
+
+        if not analysis_response.data:
+            return jsonify({'error': 'Failed to insert analyses'}), 500
+
+        renogram_analysis_id = analysis_response.data[0]["id"]
+        image_analysis_id = analysis_response.data[1]["id"]
 
         classification_response = (
             supabase_client.table("classification")
             .insert([
                 {
-                    "analysis_id": analysis_id,
+                    "analysis_id": renogram_analysis_id,
                     "prediction": svm_predicted_label,
                     "confidence": svm_probabilities.tolist(),
                     "type": "svm",
                 },
                 {
-                    "analysis_id": analysis_id,
+                    "analysis_id": image_analysis_id,
                     "prediction": cnn_predicted_label,
                     "confidence": cnn_probabilities.tolist(),
                     "type": "cnn",
+                },
+                {
+                    "analysis_id": renogram_analysis_id,
+                    "prediction": decision_tree_predicted_label,
+                    "confidence": decision_tree_probabilities.tolist(),
+                    "type": "decision_tree",
                 },
             ])
             .execute()
@@ -144,21 +175,26 @@ def classify(supabase_client):
         if not classification_response.data or len(classification_response.data) < 2:
             return jsonify({'error': 'Failed to insert classifications'}), 500
 
+
+        print("Classification response", classification_response)
+
         svm_classification_id = classification_response.data[0]["id"]
         cnn_classification_id = classification_response.data[1]["id"]
+        decision_tree_classification_id = classification_response.data[2]["id"]
 
         explanation_response = (
             supabase_client.table("explanation")
             .insert([
                 {
-                    "classification_id": svm_classification_id,
-                    "description": "This is a description of the Renogram technique",
-                    "roi_activity": roi_activity_array,
-                },
-                {
                     "classification_id": cnn_classification_id,
                     "technique": "Grad-CAM",
                     "description": "This is a description of the GradCAM technique",
+                },
+                {
+                    "classification_id": decision_tree_classification_id,
+                    "technique": "SHAP",
+                    "description": "This is a textual description of the SHAP technique",
+                    "shap_values_curve": decision_tree_explanation
                 }
             ])
             .execute()
@@ -167,7 +203,9 @@ def classify(supabase_client):
         if not explanation_response.data or len(explanation_response.data) < 2:
             return jsonify({'error': 'Failed to insert explanations'}), 500
 
+        print("Explanation response", explanation_response)
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-    return jsonify({'message': 'classify endpoint', "id": analysis_id}), 200
+    return jsonify({'message': 'classify endpoint', "id": report_id}), 200

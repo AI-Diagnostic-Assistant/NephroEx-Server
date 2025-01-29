@@ -9,6 +9,10 @@ import os
 import cv2
 import joblib
 from PIL import Image
+from scipy.stats import skew, kurtosis
+import shap
+
+
 from app.logic.CNN import Simple3DCNN
 
 
@@ -37,8 +41,8 @@ def run_single_classification_cnn(dicom_read):
         predicted = torch.argmax(output, dim=1)
 
     predicted_class = predicted.item()
-    print(f"Predicted class: {predicted_class}")
-    print("Output probabilities:", output.flatten())
+    #print(f"Predicted class: {predicted_class}")
+    #print("Output probabilities:", output.flatten())
 
     return predicted_class, output.flatten()
 
@@ -208,7 +212,7 @@ def perform_svm_analysis(dicom_read, supabase_client):
     # Predict CKD stage with SVM model
     svm_predicted, svm_probabilities = run_single_classification_svm(roi_activity_array)
 
-    return svm_predicted, svm_probabilities, roi_activity_array, left_mask, right_mask
+    return svm_predicted, svm_probabilities, roi_activity_array, left_mask, right_mask, total_activities.tolist()
 
 
 def group_2_min_frames(dicom_read):
@@ -290,6 +294,7 @@ def create_ROI_contours_png(mask_left, mask_right):
 
     return rgba_image
 
+
 def save_png(image, bucket: str, supabase_client):
     img = Image.fromarray(image)
 
@@ -300,6 +305,133 @@ def save_png(image, bucket: str, supabase_client):
     file_name = f"{storage_id}.png"
 
     response = supabase_client.storage.from_(bucket).upload(file_name, image_io.getvalue(),
-                                                         file_options={'content-type': 'image/png'})
+                                                            file_options={'content-type': 'image/png'})
     return response.path
+
+
+def extract_curve_features(curve):
+    """Extract interpretable features from a single activity curve."""
+    time_to_peak = np.argmax(curve)  # Index of the peak
+    peak_value = np.max(curve)  # Peak activity level
+    auc = np.sum(curve)  # Total activity (area under the curve)
+    rising_slope = peak_value / (time_to_peak + 1)  # Avoid division by zero
+    recovery_time = len(curve) - time_to_peak  # Time from peak to end
+    return [time_to_peak, peak_value, auc, rising_slope, recovery_time]
+
+
+def extract_statistical_features(curve):
+    """Extract statistical features from a single activity curve."""
+    mean_value = np.mean(curve)  # Mean
+    variance = np.var(curve)  # Variance
+    skewness = skew(curve)  # Skewness (asymmetry)
+    kurt = kurtosis(curve)  # Kurtosis (tailedness)
+    return [mean_value, variance, skewness, kurt]
+
+
+def process_renograms_total(X):
+    """Extract features for the total kidney curve."""
+    total_features = np.array([extract_curve_features(x) for x in X])  # Use the whole curve
+    return total_features
+
+
+def process_statistical_features_total(X):
+    """Extract statistical features for the total kidney curve."""
+    total_features = np.array([extract_statistical_features(x) for x in X])  # Use the whole curve
+    return total_features
+
+
+def combine_features_total(X):
+    """Combine temporal and statistical features for the total kidney curve."""
+    # Extract temporal features
+    temporal_features = process_renograms_total(X)
+
+    # Extract statistical features
+    statistical_features = process_statistical_features_total(X)
+
+    # Combine the two sets of features
+    return np.hstack((temporal_features, statistical_features))
+
+def run_single_classification_dt(extracted_features):
+    script_dir = os.path.dirname(__file__)
+    dt_model_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_model.joblib")
+    dt_model = joblib.load(dt_model_path)  # Load the entire model
+
+    probabilities = dt_model.predict_proba(extracted_features)[0]
+    predicted_class = dt_model.predict(extracted_features)
+
+    predicted_class = int(predicted_class)
+
+    return predicted_class, probabilities, dt_model
+
+
+def generate_shap_explanation(shap_values, feature_names, predicted_label, confidence):
+    # Get absolute SHAP values and sort them
+    print("Shap values", shap_values)
+
+    # Extract necessary information
+    shap_contributions = shap_values.values[0].tolist() # SHAP values for the current instance
+
+    print("Shap cotribution", shap_contributions)
+    feature_values = shap_values.data[0].tolist()  # Extracted feature values
+
+    feature_importance = sorted(
+        zip(feature_names, shap_contributions, feature_values), key=lambda x: abs(x[1]), reverse=True
+    )
+
+    # Identify top features
+    top_features = feature_importance[:3]  # Taking the top 3 most impactful features
+
+    print("Top features", top_features)
+
+
+    return top_features
+
+
+
+def perform_decision_tree_analysis(total_activities):
+
+    total_activities = np.array(total_activities).reshape(1, -1)
+
+    extracted_features = combine_features_total(total_activities)  # Shape: (1, num_features)
+
+    #print("extracted features shape", extracted_features.shape)
+    #print("extracted features", extracted_features)
+
+
+    pred, prob, dt_model = run_single_classification_dt(extracted_features)
+
+    #print("dt_pred", pred)
+    #print("dt_prob", prob)
+
+    script_dir = os.path.dirname(__file__)
+    training_data_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_training_data.npy")
+    X_train_sample = np.load(training_data_path, allow_pickle=True)
+
+    if X_train_sample.shape[1] != extracted_features.shape[1]:
+        raise ValueError(
+            f"Feature size mismatch! Expected {X_train_sample.shape[1]}, got {extracted_features.shape[1]}")
+
+    #Explain the prediction
+    explainer = shap.Explainer(dt_model, X_train_sample)
+    shap_values = explainer(extracted_features)
+
+    #print("shap_values", shap_values)
+
+    shap_values = shap_values[..., pred]  # Extract SHAP values for the predicted class
+
+    shap_explanation_list = shap_values.values[0].tolist()  # Convert NumPy array to a Python list
+
+    feature_names = ["Time to Peak", "Peak Value", "AUC", "Rising Slope", "Recovery Time", "Mean", "Variance", "Skewness", "Kurtosis"]
+
+    predicted_label = "healthy" if pred == 0 else "sick"
+
+    textual_explanation = generate_shap_explanation(shap_values, feature_names, predicted_label, prob)
+
+    #print("shap_explanation_list", shap_explanation_list)
+    #print("textual_explanation", textual_explanation)
+
+    return pred, prob, shap_explanation_list, textual_explanation
+
+
+
 
