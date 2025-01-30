@@ -60,7 +60,7 @@ def run_single_classification_svm(roi_activity_array):
     return predicted_class, probabilities
 
 
-def create_composite_image(dicom_read):
+def create_composite_image_rgb(dicom_read):
     pixel_data_list = []
 
     pixel_array = dicom_read.pixel_array.astype(float)
@@ -193,7 +193,7 @@ def visualize_masks(image, left_mask, right_mask):
 
 def perform_svm_analysis(dicom_read, supabase_client):
     # Create composite image of the request file
-    composite_image = create_composite_image(dicom_read)
+    composite_image = create_composite_image_rgb(dicom_read)
 
     # Predict kidney masks
     left_mask, right_mask = predict_kidney_masks(composite_image)

@@ -3,7 +3,7 @@ import io
 import pydicom
 from flask import request, jsonify, Blueprint
 import uuid
-from app.logic.logic import create_composite_image, save_image_to_bytes, run_single_classification_cnn, \
+from app.logic.logic import create_composite_image_rgb, save_image_to_bytes, run_single_classification_cnn, \
     perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage, save_total_dicom, create_ROI_contours_png, \
     save_png, perform_decision_tree_analysis
 from app.client import create_sb_client, authenticate_request
@@ -43,7 +43,7 @@ def process_dicom():
 
     try:
         # Process the DICOM files
-        composite_image = create_composite_image(files)
+        composite_image = create_composite_image_rgb(files)
 
         image_io = save_image_to_bytes(composite_image)
 
