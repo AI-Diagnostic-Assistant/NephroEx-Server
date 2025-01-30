@@ -15,12 +15,97 @@ import shap
 
 from app.logic.CNN import Simple3DCNN
 
+feature_maps = None
+gradients = None
+
 
 def save_image_to_bytes(image):
     buf = io.BytesIO()
     image.save(buf, format="PNG")
     buf.seek(0)
     return buf
+
+def forward_hook(module, input, output):
+    global feature_maps
+    feature_maps = output
+
+def backward_hook(module, grad_input, grad_output):
+    global gradients
+    gradients = grad_output[0]
+
+def generate_gradcam():
+    """
+    Generate the Grad-CAM heatmap.
+    :param feature_maps: Feature maps from the target convolutional layer (torch.Tensor).
+    :param gradients: Gradients for the feature maps (torch.Tensor).
+    :return: Heatmap (numpy array).
+    """
+    global feature_maps
+    global gradients
+    # Global average pooling of gradients to compute weights
+    weights = torch.mean(gradients, dim=(2, 3, 4), keepdim=True)  # Shape: [1, 128, 1, 1, 1]
+
+    # Weighted sum of the feature maps
+    gradcam = torch.sum(weights * feature_maps, dim=1).squeeze(0)  # Shape: [45, 32, 32]
+
+    # Apply ReLU to the heatmap
+    gradcam = torch.relu(gradcam)
+
+    # Convert to numpy
+    gradcam = gradcam.detach().cpu().numpy()
+
+    # Normalize the heatmap to [0, 1]
+    gradcam /= np.max(gradcam)
+
+    return gradcam
+
+def aggregate_heatmap(gradcam, method="max"):
+    """
+    Aggregate the heatmap across the depth dimension.
+    :param gradcam: 3D Grad-CAM heatmap (numpy array of shape [depth, height, width]).
+    :param method: Aggregation method ("max" or "mean").
+    :return: 2D heatmap.
+    """
+    if method == "max":
+        return np.max(gradcam, axis=0)  # Maximum Intensity Projection
+    elif method == "mean":
+        return np.mean(gradcam, axis=0)  # Average Projection
+    else:
+        raise ValueError("Invalid method. Use 'max' or 'mean'.")
+
+
+def create_composite_image(dicom_image):
+    # Generate a composite image (e.g., by averaging)
+    pixel_array = dicom_image.pixel_array.astype(np.float32)
+    composite_image = np.mean(pixel_array, axis=0)
+
+    # Normalize composite image to 0-255 for visualization
+    composite_image = (composite_image - composite_image.min()) / (composite_image.max() - composite_image.min()) * 255
+    composite_image = composite_image.astype(np.uint8)
+
+    return composite_image
+
+
+def overlay_heatmap(composite_image, heatmap, alpha=0.5):
+    """
+    Overlay the heatmap on the composite image.
+    :param composite_image: 2D composite image of the input volume.
+    :param heatmap: 2D Grad-CAM heatmap.
+    :param alpha: Transparency level for the heatmap.
+    :return: Overlayed image.
+    """
+    # Resize heatmap to match the composite image size
+    heatmap_resized = cv2.resize(heatmap, (composite_image.shape[1], composite_image.shape[0]))
+
+    # Apply color map to heatmap
+    heatmap_color = cv2.applyColorMap(np.uint8(255 * heatmap_resized), cv2.COLORMAP_JET)
+
+    # Convert BGR to RGB
+    heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
+
+    # Overlay the heatmap on the composite image
+    overlay = cv2.addWeighted(cv2.cvtColor(composite_image, cv2.COLOR_GRAY2BGR), 0.6, heatmap_color, alpha, 0)
+    return overlay
 
 
 def run_single_classification_cnn(dicom_read):
@@ -34,13 +119,26 @@ def run_single_classification_cnn(dicom_read):
     img /= np.max(img)  # Normalize
     volume_tensor = torch.tensor(img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
-    with torch.no_grad():
-        output = model(volume_tensor)
-        predicted = torch.argmax(output, dim=1)
+    model.conv3.register_forward_hook(forward_hook)
+    model.conv3.register_backward_hook(backward_hook)
+
+    output = model(volume_tensor)
+    predicted = torch.argmax(output, dim=1)
 
     predicted_class = predicted.item()
-    #print(f"Predicted class: {predicted_class}")
-    #print("Output probabilities:", output.flatten())
+
+    model.zero_grad()
+
+    # Perform backward pass for the target class
+    target_class = predicted_class  # Example target class
+    output[:, target_class].backward()
+
+    # Access the captured feature maps and gradients
+    print(f"Feature Maps Shape: {feature_maps.shape}")
+    print(f"Gradients Shape: {gradients.shape}")
+
+    print(f"Predicted class: {predicted_class}")
+    print("Output probabilities:", output.flatten())
 
     return predicted_class, output.flatten()
 

@@ -5,7 +5,8 @@ from flask import request, jsonify, Blueprint
 import uuid
 from app.logic.logic import create_composite_image_rgb, save_image_to_bytes, run_single_classification_cnn, \
     perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage, save_total_dicom, create_ROI_contours_png, \
-    save_png, perform_decision_tree_analysis
+    save_png, perform_decision_tree_analysis, generate_gradcam, aggregate_heatmap, create_composite_image, \
+    overlay_heatmap
 from app.client import create_sb_client, authenticate_request
 
 api = Blueprint('api', __name__)
@@ -100,6 +101,19 @@ def classify(supabase_client):
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
     decision_tree_predicted_label = "healthy" if decision_tree_predicted == 0 else "sick"
 
+    #Create and upload Grad-CAM
+    gradcam = generate_gradcam()
+
+    # Aggregate heatmap across depth
+    aggregated_heatmap = aggregate_heatmap(gradcam, method="max")
+
+    # Create composite image
+    composite_image = create_composite_image(dicom_read)
+
+    # Overlay heatmap on the composite image
+    overlay_image = overlay_heatmap(composite_image, aggregated_heatmap)
+    grad_cam_object_path = save_png(overlay_image, "heatmaps", supabase_client)
+
     #Create and upload ROI contours
     transparent_contour_image = create_ROI_contours_png(left_mask, right_mask)
     roi_contour_object_path = save_png(transparent_contour_image, "roi_contours", supabase_client)
@@ -187,6 +201,7 @@ def classify(supabase_client):
                     "classification_id": cnn_classification_id,
                     "technique": "Grad-CAM",
                     "description": "This is a description of the GradCAM technique",
+                    "heatmap_object_path": grad_cam_object_path
                 },
                 {
                     "classification_id": decision_tree_classification_id,
