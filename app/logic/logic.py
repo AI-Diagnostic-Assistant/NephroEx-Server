@@ -77,7 +77,7 @@ def aggregate_heatmap(gradcam, method="max"):
 def create_composite_image(dicom_image):
     # Generate a composite image (e.g., by averaging)
     pixel_array = dicom_image.pixel_array.astype(np.float32)
-    composite_image = np.mean(pixel_array, axis=0)
+    composite_image = np.max(pixel_array, axis=0)
 
     # Normalize composite image to 0-255 for visualization
     composite_image = (composite_image - composite_image.min()) / (composite_image.max() - composite_image.min()) * 255
@@ -86,12 +86,12 @@ def create_composite_image(dicom_image):
     return composite_image
 
 
-def overlay_heatmap(composite_image, heatmap, alpha=0.5):
+def overlay_heatmap(composite_image, heatmap, beta=0.3):
     """
     Overlay the heatmap on the composite image.
     :param composite_image: 2D composite image of the input volume.
     :param heatmap: 2D Grad-CAM heatmap.
-    :param alpha: Transparency level for the heatmap.
+    :param beta: Transparency level for the heatmap.
     :return: Overlayed image.
     """
     # Resize heatmap to match the composite image size
@@ -104,7 +104,7 @@ def overlay_heatmap(composite_image, heatmap, alpha=0.5):
     heatmap_color = cv2.cvtColor(heatmap_color, cv2.COLOR_BGR2RGB)
 
     # Overlay the heatmap on the composite image
-    overlay = cv2.addWeighted(cv2.cvtColor(composite_image, cv2.COLOR_GRAY2BGR), 0.6, heatmap_color, alpha, 0)
+    overlay = cv2.addWeighted(cv2.cvtColor(composite_image, cv2.COLOR_GRAY2BGR), 1 - beta, heatmap_color, beta, 0)
     return overlay
 
 
