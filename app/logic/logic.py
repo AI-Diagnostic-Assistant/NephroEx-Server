@@ -1,3 +1,4 @@
+import re
 import uuid
 
 import pydicom
@@ -11,6 +12,8 @@ import joblib
 from PIL import Image
 from scipy.stats import skew, kurtosis
 import shap
+import ollama
+
 
 
 from app.logic.CNN import Simple3DCNN
@@ -145,10 +148,12 @@ def run_single_classification_cnn(dicom_read):
 
 def run_single_classification_svm(roi_activity_array):
     script_dir = os.path.dirname(__file__)
-    svm_model_path = os.path.join(script_dir, "../../models/svm/svm_model_1.joblib")
-    svm_model = joblib.load(svm_model_path)  # Load the entire model
+    svm_model_path = os.path.join(script_dir, "../../models/svm/svm_best_model_total.joblib")
+    svm_model = joblib.load(svm_model_path)
 
     roi_activity_array = np.array(roi_activity_array).reshape(1, -1)
+
+    print("roi_activity_array", roi_activity_array.shape)
 
     probabilities = svm_model.predict_proba(roi_activity_array)[0]
     predicted_class = np.argmax(probabilities)
@@ -296,8 +301,6 @@ def perform_svm_analysis(dicom_read, supabase_client):
     # Predict kidney masks
     left_mask, right_mask = predict_kidney_masks(composite_image)
 
-    # visualize_masks(composite_image, left_mask, right_mask)
-
     # align masks over all frames in the original dicom file
     left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_read)
 
@@ -306,7 +309,7 @@ def perform_svm_analysis(dicom_read, supabase_client):
     roi_activity_array = [left_activities.tolist(), right_activities.tolist(), total_activities.tolist()]
 
     # Predict CKD stage with SVM model
-    svm_predicted, svm_probabilities = run_single_classification_svm(roi_activity_array)
+    svm_predicted, svm_probabilities = run_single_classification_svm(roi_activity_array[2]) # total activities
 
     return svm_predicted, svm_probabilities, roi_activity_array, left_mask, right_mask, total_activities.tolist()
 
@@ -460,14 +463,73 @@ def run_single_classification_dt(extracted_features):
     return predicted_class, probabilities, dt_model
 
 
-def generate_shap_explanation(shap_values, feature_names, predicted_label, confidence):
-    # Get absolute SHAP values and sort them
-    print("Shap values", shap_values)
+def remove_think_tags_deepseek(text: str):
+    cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    cleaned_text = cleaned_text.strip()
+
+    return cleaned_text
+
+
+def interpret_shap_feature(name, shap_val, value):
+    """Provide a medically relevant interpretation of SHAP values for each feature."""
+
+    if name == "Time to Peak":
+        return (f"A **Time to Peak** of {value:.1f} frames means the kidney took this long to reach maximum uptake. "
+                f"A higher SHAP value ({shap_val:.3f}) suggests the model considers this an important factor in the classification. "
+                "Delayed Time to Peak may indicate impaired renal function, while a lower value suggests normal or hyperactive function.")
+
+    elif name == "Peak Value":
+        return (f"A **Peak Value** of {value:.3f} represents the highest tracer uptake in the renogram. "
+                f"The SHAP impact ({shap_val:.3f}) suggests its role in the prediction. "
+                "A lower peak might indicate poor renal perfusion, while a higher peak suggests strong uptake.")
+
+    elif name == "AUC":
+        return (f"The **Area Under the Curve (AUC)** is {value:.1f}, representing the total tracer activity over time. "
+                f"The model's SHAP impact ({shap_val:.3f}) indicates its influence. "
+                "Lower AUC may suggest reduced kidney function, while higher values imply better tracer retention.")
+
+    elif name == "Rising Slope":
+        return (
+            f"A **Rising Slope** of {value:.3f} (peak value divided by time-to-peak) indicates how quickly the kidney reaches maximum uptake. "
+            f"A SHAP impact of {shap_val:.3f} suggests its significance in the decision. "
+            "A steeper slope may reflect good function, while a lower slope might indicate delayed uptake.")
+
+    elif name == "Recovery Time":
+        return (
+            f"The **Recovery Time** is {value:.1f} frames, representing how long the kidney takes to clear the tracer after peak uptake. "
+            f"With a SHAP impact of {shap_val:.3f}, this feature affects the model's prediction. "
+            "A prolonged recovery may indicate slow clearance and impaired renal function.")
+
+    elif name == "Mean":
+        return (
+            f"The **Mean Activity Level** is {value:.3f}, showing the average tracer uptake throughout the renogram. "
+            f"A SHAP impact of {shap_val:.3f} suggests how much this factor matters. "
+            "Lower values might indicate overall poor kidney uptake, while higher values suggest sustained function.")
+
+    elif name == "Variance":
+        return (f"The **Variance** of {value:.3f} represents fluctuations in tracer uptake. "
+                f"With a SHAP value of {shap_val:.3f}, its role in the classification is noted. "
+                "High variance suggests irregular kidney function, while low variance may reflect stable uptake.")
+
+    elif name == "Skewness":
+        return (f"A **Skewness** of {value:.3f} describes the asymmetry of uptake over time. "
+                f"SHAP impact: {shap_val:.3f}. "
+                "A positive skew indicates early uptake dominance, while a negative skew suggests delayed retention.")
+
+    elif name == "Kurtosis":
+        return (f"A **Kurtosis** of {value:.3f} represents how peaked or flat the tracer distribution is. "
+                f"SHAP impact: {shap_val:.3f}. "
+                "Higher kurtosis suggests sharp peaks in uptake, which might indicate abnormal renal behavior.")
+
+    else:
+        return "Feature impact needs further interpretation."
+
+
+def generate_textual_shap_explanation(shap_values, feature_names, predicted_label, confidence):
 
     # Extract necessary information
     shap_contributions = shap_values.values[0].tolist() # SHAP values for the current instance
 
-    print("Shap cotribution", shap_contributions)
     feature_values = shap_values.data[0].tolist()  # Extracted feature values
 
     feature_importance = sorted(
@@ -477,16 +539,56 @@ def generate_shap_explanation(shap_values, feature_names, predicted_label, confi
     # Identify top features
     top_features = feature_importance[:3]  # Taking the top 3 most impactful features
 
-    print("Top features", top_features)
+    # Format the features into a structured text prompt
+    feature_text = "\n".join([
+        f"- {interpret_shap_feature(name, shap_val, value)}"
+        for name, shap_val, value in top_features
+    ])
+
+    print("Feature text", feature_text)
+
+    PROMPT = f"""
+    The model predicts that the patient is {predicted_label} with a confidence of {confidence:.2f}.
+
+    The decision was based on the following key factors:
+
+    {feature_text}
+
+    Based on these factors, provide a structured explanation in **clear and readable plain text**.
+
+    - Do NOT use any special formatting like asterisks (*), markdown symbols, or bullet points.
+    - The response should be in full sentences and structured like a professional medical explanation.
+    - Keep it concise but informative.
+    - Do not include disclaimers.
+
+    Output Example:
+
+    "The model classifies the patient as [healthy/sick] due to [brief reason]. The most important factors were [Factor 1], [Factor 2], and [Factor 3]. [Explain what each factor means in relation to kidney function]. Overall, these indicators suggest that [summary of model reasoning]."
+    """
+
+    MODEL = "deepseek-r1:7b"
+
+    result = ollama.generate(model=MODEL, prompt=PROMPT)
+    response = result["response"]
+
+    textual_explanation = remove_think_tags_deepseek(response)
+
+    print("Textual explanation", textual_explanation)
+
+    return textual_explanation
 
 
-    return top_features
+
+
+
 
 
 
 def perform_decision_tree_analysis(total_activities):
 
     total_activities = np.array(total_activities).reshape(1, -1)
+
+    print("total_activities", total_activities.shape)
 
     extracted_features = combine_features_total(total_activities)  # Shape: (1, num_features)
 
@@ -495,9 +597,6 @@ def perform_decision_tree_analysis(total_activities):
 
 
     pred, prob, dt_model = run_single_classification_dt(extracted_features)
-
-    #print("dt_pred", pred)
-    #print("dt_prob", prob)
 
     script_dir = os.path.dirname(__file__)
     training_data_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_training_data.npy")
@@ -511,8 +610,6 @@ def perform_decision_tree_analysis(total_activities):
     explainer = shap.Explainer(dt_model, X_train_sample)
     shap_values = explainer(extracted_features)
 
-    #print("shap_values", shap_values)
-
     shap_values = shap_values[..., pred]  # Extract SHAP values for the predicted class
 
     shap_explanation_list = shap_values.values[0].tolist()  # Convert NumPy array to a Python list
@@ -521,10 +618,9 @@ def perform_decision_tree_analysis(total_activities):
 
     predicted_label = "healthy" if pred == 0 else "sick"
 
-    textual_explanation = generate_shap_explanation(shap_values, feature_names, predicted_label, prob)
+    textual_explanation = generate_textual_shap_explanation(shap_values, feature_names, predicted_label, prob[pred])
 
-    #print("shap_explanation_list", shap_explanation_list)
-    #print("textual_explanation", textual_explanation)
+    print("textual_explanation", textual_explanation)
 
     return pred, prob, shap_explanation_list, textual_explanation
 

@@ -206,7 +206,7 @@ def classify(supabase_client):
                 {
                     "classification_id": decision_tree_classification_id,
                     "technique": "SHAP",
-                    "description": "This is a textual description of the SHAP technique",
+                    "description": decision_tree_textual_explanation,
                     "shap_values_curve": decision_tree_explanation
                 }
             ])
