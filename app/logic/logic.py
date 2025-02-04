@@ -1,3 +1,4 @@
+import json
 import re
 import uuid
 
@@ -14,8 +15,6 @@ from scipy.stats import skew, kurtosis
 import shap
 import ollama
 
-
-
 from app.logic.CNN import Simple3DCNN
 
 feature_maps = None
@@ -28,13 +27,16 @@ def save_image_to_bytes(image):
     buf.seek(0)
     return buf
 
+
 def forward_hook(module, input, output):
     global feature_maps
     feature_maps = output
 
+
 def backward_hook(module, grad_input, grad_output):
     global gradients
     gradients = grad_output[0]
+
 
 def generate_gradcam():
     """
@@ -61,6 +63,7 @@ def generate_gradcam():
     gradcam /= np.max(gradcam)
 
     return gradcam
+
 
 def aggregate_heatmap(gradcam, method="max"):
     """
@@ -136,14 +139,17 @@ def run_single_classification_cnn(dicom_read):
     target_class = predicted_class  # Example target class
     output[:, target_class].backward()
 
-    # Access the captured feature maps and gradients
-    print(f"Feature Maps Shape: {feature_maps.shape}")
-    print(f"Gradients Shape: {gradients.shape}")
-
     print(f"Predicted class: {predicted_class}")
     print("Output probabilities:", output.flatten())
 
-    return predicted_class, output.flatten()
+    print("output", output)
+
+    confidence = output.flatten().tolist()[predicted_class]
+
+    print(confidence)
+
+
+    return predicted_class, confidence
 
 
 def run_single_classification_svm(roi_activity_array):
@@ -157,10 +163,9 @@ def run_single_classification_svm(roi_activity_array):
 
     probabilities = svm_model.predict_proba(roi_activity_array)[0]
     predicted_class = np.argmax(probabilities)
+    confidence = probabilities[predicted_class]
 
-    predicted_class = int(predicted_class)
-
-    return predicted_class, probabilities
+    return int(predicted_class), float(confidence)
 
 
 def create_composite_image_rgb(dicom_read):
@@ -309,9 +314,9 @@ def perform_svm_analysis(dicom_read, supabase_client):
     roi_activity_array = [left_activities.tolist(), right_activities.tolist(), total_activities.tolist()]
 
     # Predict CKD stage with SVM model
-    svm_predicted, svm_probabilities = run_single_classification_svm(roi_activity_array[2]) # total activities
+    svm_predicted, confidence = run_single_classification_svm(roi_activity_array[2])  # total activities
 
-    return svm_predicted, svm_probabilities, roi_activity_array, left_mask, right_mask, total_activities.tolist()
+    return svm_predicted, confidence, roi_activity_array, left_mask, right_mask, total_activities.tolist()
 
 
 def group_2_min_frames(dicom_read):
@@ -442,13 +447,16 @@ def process_statistical_features_total(X):
 def combine_features_total(X):
     """Combine temporal and statistical features for the total kidney curve."""
     # Extract temporal features
-    temporal_features = process_renograms_total(X)
+    # temporal_features = process_renograms_total(X)
 
     # Extract statistical features
     statistical_features = process_statistical_features_total(X)
 
+    print("statistical_features", statistical_features)
+
     # Combine the two sets of features
-    return np.hstack((temporal_features, statistical_features))
+    return statistical_features
+
 
 def run_single_classification_dt(extracted_features):
     script_dir = os.path.dirname(__file__)
@@ -458,9 +466,9 @@ def run_single_classification_dt(extracted_features):
     probabilities = dt_model.predict_proba(extracted_features)[0]
     predicted_class = dt_model.predict(extracted_features)
 
-    predicted_class = int(predicted_class)
+    confidence = probabilities[predicted_class]
 
-    return predicted_class, probabilities, dt_model
+    return int(predicted_class), float(confidence), dt_model
 
 
 def remove_think_tags_deepseek(text: str):
@@ -526,9 +534,8 @@ def interpret_shap_feature(name, shap_val, value):
 
 
 def generate_textual_shap_explanation(shap_values, feature_names, predicted_label, confidence):
-
     # Extract necessary information
-    shap_contributions = shap_values.values[0].tolist() # SHAP values for the current instance
+    shap_contributions = shap_values.values[0].tolist()  # SHAP values for the current instance
 
     feature_values = shap_values.data[0].tolist()  # Extracted feature values
 
@@ -544,8 +551,6 @@ def generate_textual_shap_explanation(shap_values, feature_names, predicted_labe
         f"- {interpret_shap_feature(name, shap_val, value)}"
         for name, shap_val, value in top_features
     ])
-
-    print("Feature text", feature_text)
 
     PROMPT = f"""
     The model predicts that the patient is {predicted_label} with a confidence of {confidence:.2f}.
@@ -573,30 +578,15 @@ def generate_textual_shap_explanation(shap_values, feature_names, predicted_labe
 
     textual_explanation = remove_think_tags_deepseek(response)
 
-    print("Textual explanation", textual_explanation)
-
     return textual_explanation
 
 
-
-
-
-
-
-
 def perform_decision_tree_analysis(total_activities):
-
     total_activities = np.array(total_activities).reshape(1, -1)
-
-    print("total_activities", total_activities.shape)
 
     extracted_features = combine_features_total(total_activities)  # Shape: (1, num_features)
 
-    #print("extracted features shape", extracted_features.shape)
-    #print("extracted features", extracted_features)
-
-
-    pred, prob, dt_model = run_single_classification_dt(extracted_features)
+    prediction, confidence, dt_model = run_single_classification_dt(extracted_features)
 
     script_dir = os.path.dirname(__file__)
     training_data_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_training_data.npy")
@@ -606,24 +596,26 @@ def perform_decision_tree_analysis(total_activities):
         raise ValueError(
             f"Feature size mismatch! Expected {X_train_sample.shape[1]}, got {extracted_features.shape[1]}")
 
-    #Explain the prediction
+    # Explain the prediction
     explainer = shap.Explainer(dt_model, X_train_sample)
     shap_values = explainer(extracted_features)
 
-    shap_values = shap_values[..., pred]  # Extract SHAP values for the predicted class
+    shap_values = shap_values[..., prediction]  # Extract SHAP values for the predicted class
 
-    shap_explanation_list = shap_values.values[0].tolist()  # Convert NumPy array to a Python list
+    print("shap values predicted class", shap_values)
 
-    feature_names = ["Time to Peak", "Peak Value", "AUC", "Rising Slope", "Recovery Time", "Mean", "Variance", "Skewness", "Kurtosis"]
+    shap_values_list = np.array(shap_values.values[0]).tolist()  # Convert NumPy array to a Python list
+    feature_values_list = np.array(shap_values.data[0]).tolist()  # Corresponding feature values
+    base_values_list = np.full_like(shap_values_list, shap_values.base_values[0]).tolist()  # Shape: (4,)
 
-    predicted_label = "healthy" if pred == 0 else "sick"
+    shap_data = [shap_values_list, feature_values_list, base_values_list]  # Explicit conversion
 
-    textual_explanation = generate_textual_shap_explanation(shap_values, feature_names, predicted_label, prob[pred])
+    feature_names = ["Mean", "Variance", "Skewness", "Kurtosis"]
 
-    print("textual_explanation", textual_explanation)
+    predicted_label = "healthy" if prediction == 0 else "sick"
 
-    return pred, prob, shap_explanation_list, textual_explanation
+    #textual_explanation = generate_textual_shap_explanation(shap_values, feature_names, predicted_label, confidence)
 
+    textual_explanation = "hei"
 
-
-
+    return prediction, confidence, shap_data, textual_explanation

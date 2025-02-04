@@ -1,5 +1,6 @@
 import io
 
+import numpy as np
 import pydicom
 from flask import request, jsonify, Blueprint
 import uuid
@@ -93,9 +94,9 @@ def classify(supabase_client):
     storage_ids = save_summed_frames_to_storage(grouped_frames, supabase_client)
 
     #CNN and SVM predictions
-    cnn_predicted, cnn_probabilities = run_single_classification_cnn(dicom_read)
-    svm_predicted, svm_probabilities, roi_activity_array, left_mask, right_mask, total_activities = perform_svm_analysis(dicom_read, supabase_client)
-    decision_tree_predicted, decision_tree_probabilities, decision_tree_explanation, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities)
+    cnn_predicted, cnn_confidence = run_single_classification_cnn(dicom_read)
+    svm_predicted, svm_confidence, roi_activity_array, left_mask, right_mask, total_activities = perform_svm_analysis(dicom_read, supabase_client)
+    decision_tree_predicted, decision_tree_confidence, shap_data, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
@@ -165,19 +166,19 @@ def classify(supabase_client):
                 {
                     "analysis_id": renogram_analysis_id,
                     "prediction": svm_predicted_label,
-                    "confidence": svm_probabilities.tolist(),
+                    "confidence": float(svm_confidence),
                     "type": "svm",
                 },
                 {
                     "analysis_id": image_analysis_id,
                     "prediction": cnn_predicted_label,
-                    "confidence": cnn_probabilities.tolist(),
+                    "confidence": float(cnn_confidence),
                     "type": "cnn",
                 },
                 {
                     "analysis_id": renogram_analysis_id,
                     "prediction": decision_tree_predicted_label,
-                    "confidence": decision_tree_probabilities.tolist(),
+                    "confidence": float(decision_tree_confidence),
                     "type": "decision_tree",
                 },
             ])
@@ -194,6 +195,8 @@ def classify(supabase_client):
         cnn_classification_id = classification_response.data[1]["id"]
         decision_tree_classification_id = classification_response.data[2]["id"]
 
+        print("shap_data outside", shap_data)
+
         explanation_response = (
             supabase_client.table("explanation")
             .insert([
@@ -207,7 +210,7 @@ def classify(supabase_client):
                     "classification_id": decision_tree_classification_id,
                     "technique": "SHAP",
                     "description": decision_tree_textual_explanation,
-                    "shap_values_curve": decision_tree_explanation
+                    "shap_values_renogram": shap_data
                 }
             ])
             .execute()
