@@ -58,3 +58,4 @@ joblib
 segmentation_models_pytorch
 scikit-learn
 shap
+ollama
