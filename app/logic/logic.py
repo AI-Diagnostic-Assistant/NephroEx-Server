@@ -80,9 +80,11 @@ def aggregate_heatmap(gradcam, method="max"):
         raise ValueError("Invalid method. Use 'max' or 'mean'.")
 
 
-def create_composite_image(dicom_image):
+def create_composite_image(pixel_array, dicom_image=None):
     # Generate a composite image (e.g., by averaging)
-    pixel_array = dicom_image.pixel_array.astype(np.float32)
+    if dicom_image:
+        pixel_array = dicom_image.pixel_array.astype(np.float32)
+
     composite_image = np.max(pixel_array, axis=0)
 
     # Normalize composite image to 0-255 for visualization
@@ -112,6 +114,35 @@ def overlay_heatmap(composite_image, heatmap, beta=0.3):
     # Overlay the heatmap on the composite image
     overlay = cv2.addWeighted(cv2.cvtColor(composite_image, cv2.COLOR_GRAY2BGR), 1 - beta, heatmap_color, beta, 0)
     return overlay
+
+
+def create_and_overlay_heatmaps(dicom_read):
+    composite_images = []
+    heatmaps = []
+    overlayed_images = []
+
+    pixel_array = dicom_read.pixel_array.astype(np.float32)
+    gradcam = generate_gradcam()
+
+    for i in range(pixel_array.shape[0]):
+        if i % 12 == 0:
+            group_frames_composite = pixel_array[i:i + 12]
+            composite_image = create_composite_image(pixel_array=group_frames_composite)
+            composite_images.append(composite_image)
+
+        if i % 12 == 0:
+            gradcam_index = i // 4
+            if gradcam_index < gradcam.shape[0]:
+                group_frames_heatmap = gradcam[gradcam_index:gradcam_index + 3]
+                heatmap = aggregate_heatmap(group_frames_heatmap)
+                heatmaps.append(heatmap)
+
+    # Overlay heatmaps on composite images
+    for composite_image, heatmap in zip(composite_images, heatmaps):
+        overlay_image = overlay_heatmap(composite_image, heatmap)
+        overlayed_images.append(overlay_image)
+
+    return overlayed_images
 
 
 def run_single_classification_cnn(dicom_read):
@@ -362,6 +393,21 @@ def save_total_dicom(file_stream, sb_client):
             'content-type': 'application/dicom'})
 
         return response.path
+
+    except Exception as e:
+        raise RuntimeError(f"Error processing DICOM file: {str(e)}")
+
+
+def save_composite_heatmaps(overlayed_images, sb_client):
+    storage_paths = []
+
+    try:
+        for idx, overlayed_image in enumerate(overlayed_images):
+            path = save_png(overlayed_image, 'heatmaps', sb_client)
+
+            storage_paths.append(path)
+
+        return storage_paths
 
     except Exception as e:
         raise RuntimeError(f"Error processing DICOM file: {str(e)}")
