@@ -193,7 +193,6 @@ def classify(supabase_client):
                 {
                     "classification_id": cnn_classification_id,
                     "technique": "Grad-CAM",
-                    "description": "This is a description of the GradCAM technique",
                     "heatmap_object_paths": storage_heatmap_paths
                 },
                 {
