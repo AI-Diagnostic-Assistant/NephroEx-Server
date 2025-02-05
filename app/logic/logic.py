@@ -506,7 +506,7 @@ def combine_features_total(X):
 
 def run_single_classification_dt(extracted_features):
     script_dir = os.path.dirname(__file__)
-    dt_model_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_model.joblib")
+    dt_model_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_model_best.joblib")
     dt_model = joblib.load(dt_model_path)  # Load the entire model
 
     probabilities = dt_model.predict_proba(extracted_features)[0]
@@ -635,7 +635,7 @@ def perform_decision_tree_analysis(total_activities):
     prediction, confidence, dt_model = run_single_classification_dt(extracted_features)
 
     script_dir = os.path.dirname(__file__)
-    training_data_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_training_data.npy")
+    training_data_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_training_data_best.npy")
     X_train_sample = np.load(training_data_path, allow_pickle=True)
 
     if X_train_sample.shape[1] != extracted_features.shape[1]:
