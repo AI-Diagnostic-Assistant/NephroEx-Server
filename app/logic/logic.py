@@ -185,14 +185,18 @@ def run_single_classification_cnn(dicom_read):
 
 def run_single_classification_svm(roi_activity_array):
     script_dir = os.path.dirname(__file__)
-    svm_model_path = os.path.join(script_dir, "../../models/svm/svm_best_model_total.joblib")
+    svm_model_path = os.path.join(script_dir, "../../models/svm/svm_best_model_summed.joblib")
+    scaler_path = os.path.join(script_dir, "../../models/svm/scaler_summed.joblib")
     svm_model = joblib.load(svm_model_path)
+    scaler = joblib.load(scaler_path)
 
     roi_activity_array = np.array(roi_activity_array).reshape(1, -1)
 
-    print("roi_activity_array", roi_activity_array.shape)
+    scaled_data = scaler.transform(roi_activity_array)
 
-    probabilities = svm_model.predict_proba(roi_activity_array)[0]
+    print("scaled roi activity", scaled_data.shape)
+
+    probabilities = svm_model.predict_proba(scaled_data)[0]
     predicted_class = np.argmax(probabilities)
     confidence = probabilities[predicted_class]
 
@@ -390,30 +394,28 @@ def visualize_masks(image, left_mask, right_mask):
 
 
 def calculate_shap_data(model, training_data, explainer_data, prediction):
-
-    #print("training_data", training_data)
-    #print("explainer_data", explainer_data)
-    #print("prediction", prediction)
+    script_dir = os.path.dirname(__file__)
+    scaler_path = os.path.join(script_dir, "../../models/svm/scaler_summed.joblib")
+    scaler = joblib.load(scaler_path)
 
     explainer_data = np.array(explainer_data).reshape(1, -1)
 
+    # Scale the explainer_data to match what is used in Google Colab
+    scaled_explainer_data = scaler.transform(explainer_data)
+
     explainer = shap.KernelExplainer(model.predict_proba, training_data)
 
-    shap_values = explainer(explainer_data)
-
-    #print("shap values SVM", shap_values)
+    shap_values = explainer(scaled_explainer_data)
 
     shap_values = shap_values[..., prediction]  # Extract SHAP values for the predicted class
 
-    #print("shap values predicted class SVM", shap_values)
+    feature_values_raw = scaler.inverse_transform(scaled_explainer_data)[0]  # Get original feature values
 
-    shap_values_list = np.array(shap_values.values[0]).tolist()  # Convert NumPy array to a Python list
-    feature_values_list = np.array(shap_values.data[0]).tolist()  # Corresponding feature values
-    base_values_list = np.full_like(shap_values_list, shap_values.base_values[0]).tolist()  # Shape: (4,)
+    shap_values_list = np.array(shap_values.values[0]).tolist()
+    feature_values_list = np.array(feature_values_raw).tolist()
+    base_values_list = np.full_like(shap_values_list, shap_values.base_values[0]).tolist()
 
     shap_data = [shap_values_list, feature_values_list, base_values_list]  # Explicit conversion
-
-    print("SHAP_DATA", shap_data)
 
     return shap_data
 
@@ -447,11 +449,11 @@ def perform_svm_analysis(dicom_read, supabase_client):
     left_activities, right_activities, total_activities = create_renogram(left_mask_alignments, right_mask_alignments)
     roi_activity_array = [left_activities.tolist(), right_activities.tolist(), total_activities.tolist()]
 
-    # Create renogram over 2 min summed frames from the predicted masks
+    # Create renogram over 3 min summed frames from the predicted masks
     _, _, total_activities_summed = create_renogram(left_mask_alignments_summed, right_mask_alignments_summed)
 
     # Predict CKD stage with SVM model
-    prediction, confidence = run_single_classification_svm(roi_activity_array[2])  # total activities
+    prediction, confidence = run_single_classification_svm(total_activities_summed)  # total activities
 
     training_data = load_training_data("../../models/svm/svm_best_training_data.npy", total_activities_summed)
 
@@ -583,7 +585,7 @@ def extract_statistical_features(X):
 
 def run_single_classification_dt(extracted_features):
     script_dir = os.path.dirname(__file__)
-    dt_model_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_model_best.joblib")
+    dt_model_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_model.joblib")
     dt_model = joblib.load(dt_model_path)  # Load the entire model
 
     probabilities = dt_model.predict_proba(extracted_features)[0]
@@ -712,7 +714,7 @@ def perform_decision_tree_analysis(total_activities):
     prediction, confidence, dt_model = run_single_classification_dt(extracted_features)
 
     script_dir = os.path.dirname(__file__)
-    training_data_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_training_data_best.npy")
+    training_data_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_training_data.npy")
     X_train_sample = np.load(training_data_path, allow_pickle=True)
 
     if X_train_sample.shape[1] != extracted_features.shape[1]:
