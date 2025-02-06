@@ -285,6 +285,65 @@ def align_masks_over_frames(left_kidney_mask, right_kidney_mask, dicom_read):
     return left_mask_alignments, right_mask_alignments
 
 
+
+def align_masks_over_summed_frames(left_kidney_mask, right_kidney_mask, dicom_read, frame_interval_seconds=10, sum_duration_minutes=3):
+    left_mask_alignments_summed = []
+    right_mask_alignments_summed = []
+
+    global_max = 0  # Initialize global max for summed frames
+
+    # First Pass: Find Global Max
+    num_frames = dicom_read.NumberOfFrames
+    frames_per_sum = int((sum_duration_minutes * 60) / frame_interval_seconds)
+
+    for start_idx in range(0, num_frames, frames_per_sum):
+        end_idx = min(start_idx + frames_per_sum, num_frames)
+        summed_frame = np.sum(dicom_read.pixel_array[start_idx:end_idx], axis=0).astype(np.uint16)
+        global_max = max(global_max, np.max(summed_frame))  # Update global max
+
+    if global_max == 0:
+        print("Global max is zero, skipping processing to avoid division by zero.")
+        return
+
+    for start_idx in range(0, num_frames, frames_per_sum):
+        end_idx = min(start_idx + frames_per_sum, num_frames)
+        summed_frame = np.sum(dicom_read.pixel_array[start_idx:end_idx], axis=0).astype(np.uint16)
+
+        normalized_summed_frame = (summed_frame / global_max * 255).astype(np.uint8)
+
+        # Ensure the kidney masks are in the range [0, 1]
+        if left_kidney_mask.max() <= 1.0 and right_kidney_mask.max() <= 1.0:
+            left_kidney_mask = (left_kidney_mask * 255).astype(np.uint8)
+            right_kidney_mask = (right_kidney_mask * 255).astype(np.uint8)
+
+        # Ensure the kidney ROI is single-channel (grayscale)
+        if left_kidney_mask.ndim == 3 and right_kidney_mask.ndim == 3:
+            left_kidney_mask = cv2.cvtColor(left_kidney_mask, cv2.COLOR_BGR2GRAY)
+            right_kidney_mask = cv2.cvtColor(right_kidney_mask, cv2.COLOR_BGR2GRAY)
+
+        # Resize and apply the left kidney mask
+        resized_left_kidney_roi = cv2.resize(left_kidney_mask,
+                                             (normalized_summed_frame.shape[1], normalized_summed_frame.shape[0]),
+                                             interpolation=cv2.INTER_NEAREST)
+
+        left_masked_frame = cv2.bitwise_and(normalized_summed_frame, normalized_summed_frame,
+                                            mask=resized_left_kidney_roi)
+
+        # Resize and apply the right kidney mask
+        resized_right_kidney_roi = cv2.resize(right_kidney_mask,
+                                              (normalized_summed_frame.shape[1], normalized_summed_frame.shape[0]),
+                                              interpolation=cv2.INTER_NEAREST)
+        right_masked_frame = cv2.bitwise_and(normalized_summed_frame, normalized_summed_frame,
+                                             mask=resized_right_kidney_roi)
+
+        left_mask_alignments_summed.append(left_masked_frame)
+        right_mask_alignments_summed.append(right_masked_frame)
+
+    return left_mask_alignments_summed, right_mask_alignments_summed
+
+
+
+
 def create_renogram(left_mask_alignments, right_mask_alignments):
     left_activities = []
     right_activities = []
@@ -330,6 +389,49 @@ def visualize_masks(image, left_mask, right_mask):
     plt.show()
 
 
+def calculate_shap_data(model, training_data, explainer_data, prediction):
+
+    #print("training_data", training_data)
+    #print("explainer_data", explainer_data)
+    #print("prediction", prediction)
+
+    explainer_data = np.array(explainer_data).reshape(1, -1)
+
+    explainer = shap.KernelExplainer(model.predict_proba, training_data)
+
+    shap_values = explainer(explainer_data)
+
+    #print("shap values SVM", shap_values)
+
+    shap_values = shap_values[..., prediction]  # Extract SHAP values for the predicted class
+
+    #print("shap values predicted class SVM", shap_values)
+
+    shap_values_list = np.array(shap_values.values[0]).tolist()  # Convert NumPy array to a Python list
+    feature_values_list = np.array(shap_values.data[0]).tolist()  # Corresponding feature values
+    base_values_list = np.full_like(shap_values_list, shap_values.base_values[0]).tolist()  # Shape: (4,)
+
+    shap_data = [shap_values_list, feature_values_list, base_values_list]  # Explicit conversion
+
+    print("SHAP_DATA", shap_data)
+
+    return shap_data
+
+def load_training_data(training_data_path, generated_data):
+    script_dir = os.path.dirname(__file__)
+    training_data_path = os.path.join(script_dir, training_data_path)
+    training_data = np.load(training_data_path, allow_pickle=True)
+
+    print("training_data", training_data.shape)
+    print("generated_data", generated_data.shape)
+
+    if training_data.shape[1] != generated_data.shape[0]:
+        raise ValueError(
+            f"Feature size mismatch! Expected {training_data.shape[1]}, got {generated_data.shape[1]}")
+
+    return training_data
+
+
 def perform_svm_analysis(dicom_read, supabase_client):
     # Create composite image of the request file
     composite_image = create_composite_image_rgb(dicom_read)
@@ -339,15 +441,27 @@ def perform_svm_analysis(dicom_read, supabase_client):
 
     # align masks over all frames in the original dicom file
     left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_read)
+    left_mask_alignments_summed, right_mask_alignments_summed = align_masks_over_summed_frames(left_mask, right_mask, dicom_read)
 
-    # Create renogram from the predicted masks
+    # Create renogram over all 180 frames from the predicted masks
     left_activities, right_activities, total_activities = create_renogram(left_mask_alignments, right_mask_alignments)
     roi_activity_array = [left_activities.tolist(), right_activities.tolist(), total_activities.tolist()]
 
-    # Predict CKD stage with SVM model
-    svm_predicted, confidence = run_single_classification_svm(roi_activity_array[2])  # total activities
+    # Create renogram over 2 min summed frames from the predicted masks
+    _, _, total_activities_summed = create_renogram(left_mask_alignments_summed, right_mask_alignments_summed)
 
-    return svm_predicted, confidence, roi_activity_array, left_mask, right_mask, total_activities.tolist()
+    # Predict CKD stage with SVM model
+    prediction, confidence = run_single_classification_svm(roi_activity_array[2])  # total activities
+
+    training_data = load_training_data("../../models/svm/svm_best_training_data.npy", total_activities_summed)
+
+    script_dir = os.path.dirname(__file__)
+    svm_model_path = os.path.join(script_dir, "../../models/svm/svm_best_model_summed.joblib")
+    svm_model_summed = joblib.load(svm_model_path)
+
+    shap_data = calculate_shap_data(svm_model_summed, training_data, total_activities_summed.tolist(), prediction)
+
+    return prediction, confidence, roi_activity_array, left_mask, right_mask, total_activities.tolist(), shap_data
 
 
 def group_2_min_frames(dicom_read):
@@ -459,49 +573,12 @@ def save_png(image, bucket: str, supabase_client):
     return response.path
 
 
-def extract_curve_features(curve):
-    """Extract interpretable features from a single activity curve."""
-    time_to_peak = np.argmax(curve)  # Index of the peak
-    peak_value = np.max(curve)  # Peak activity level
-    auc = np.sum(curve)  # Total activity (area under the curve)
-    rising_slope = peak_value / (time_to_peak + 1)  # Avoid division by zero
-    recovery_time = len(curve) - time_to_peak  # Time from peak to end
-    return [time_to_peak, peak_value, auc, rising_slope, recovery_time]
-
-
-def extract_statistical_features(curve):
-    """Extract statistical features from a single activity curve."""
-    mean_value = np.mean(curve)  # Mean
-    variance = np.var(curve)  # Variance
-    skewness = skew(curve)  # Skewness (asymmetry)
-    kurt = kurtosis(curve)  # Kurtosis (tailedness)
-    return [mean_value, variance, skewness, kurt]
-
-
-def process_renograms_total(X):
-    """Extract features for the total kidney curve."""
-    total_features = np.array([extract_curve_features(x) for x in X])  # Use the whole curve
-    return total_features
-
-
-def process_statistical_features_total(X):
-    """Extract statistical features for the total kidney curve."""
-    total_features = np.array([extract_statistical_features(x) for x in X])  # Use the whole curve
-    return total_features
-
-
-def combine_features_total(X):
-    """Combine temporal and statistical features for the total kidney curve."""
-    # Extract temporal features
-    # temporal_features = process_renograms_total(X)
-
-    # Extract statistical features
-    statistical_features = process_statistical_features_total(X)
-
-    print("statistical_features", statistical_features)
-
-    # Combine the two sets of features
-    return statistical_features
+def extract_statistical_features(X):
+    """Extract mean, variance, skewness, and kurtosis for each renogram in X."""
+    return np.array([
+        [np.mean(curve), np.var(curve), skew(curve), kurtosis(curve)]
+        for curve in X
+    ])
 
 
 def run_single_classification_dt(extracted_features):
@@ -630,7 +707,7 @@ def generate_textual_shap_explanation(shap_values, feature_names, predicted_labe
 def perform_decision_tree_analysis(total_activities):
     total_activities = np.array(total_activities).reshape(1, -1)
 
-    extracted_features = combine_features_total(total_activities)  # Shape: (1, num_features)
+    extracted_features = extract_statistical_features(total_activities)
 
     prediction, confidence, dt_model = run_single_classification_dt(extracted_features)
 
@@ -646,9 +723,11 @@ def perform_decision_tree_analysis(total_activities):
     explainer = shap.Explainer(dt_model, X_train_sample)
     shap_values = explainer(extracted_features)
 
+    #print("shap values DT", shap_values)
+
     shap_values = shap_values[..., prediction]  # Extract SHAP values for the predicted class
 
-    print("shap values predicted class", shap_values)
+    #print("shap values predicted class DT", shap_values)
 
     shap_values_list = np.array(shap_values.values[0]).tolist()  # Convert NumPy array to a Python list
     feature_values_list = np.array(shap_values.data[0]).tolist()  # Corresponding feature values

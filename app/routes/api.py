@@ -94,8 +94,8 @@ def classify(supabase_client):
 
     #CNN and SVM predictions
     cnn_predicted, cnn_confidence = run_single_classification_cnn(dicom_read)
-    svm_predicted, svm_confidence, roi_activity_array, left_mask, right_mask, total_activities = perform_svm_analysis(dicom_read, supabase_client)
-    decision_tree_predicted, decision_tree_confidence, shap_data, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities)
+    svm_predicted, svm_confidence, roi_activity_array, left_mask, right_mask, total_activities, shap_data_svm = perform_svm_analysis(dicom_read, supabase_client)
+    decision_tree_predicted, decision_tree_confidence, shap_data_dt, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
@@ -178,14 +178,9 @@ def classify(supabase_client):
         if not classification_response.data or len(classification_response.data) < 2:
             return jsonify({'error': 'Failed to insert classifications'}), 500
 
-
-        print("Classification response", classification_response)
-
         svm_classification_id = classification_response.data[0]["id"]
         cnn_classification_id = classification_response.data[1]["id"]
         decision_tree_classification_id = classification_response.data[2]["id"]
-
-        print("shap_data outside", shap_data)
 
         explanation_response = (
             supabase_client.table("explanation")
@@ -196,10 +191,16 @@ def classify(supabase_client):
                     "heatmap_object_paths": storage_heatmap_paths
                 },
                 {
+                    "classification_id": svm_classification_id,
+                    "technique": "SHAP",
+                    "description": "This is a description of the SHAP SVM technique",
+                    "shap_values_renogram_summed": shap_data_svm
+                },
+                {
                     "classification_id": decision_tree_classification_id,
                     "technique": "SHAP",
                     "description": decision_tree_textual_explanation,
-                    "shap_values_renogram": shap_data
+                    "shap_values_renogram": shap_data_dt
                 }
             ])
             .execute()
