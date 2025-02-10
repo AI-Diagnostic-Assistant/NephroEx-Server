@@ -7,8 +7,8 @@ import os
 load_dotenv()
 
 def create_sb_client():
-    url: str = 'https://lwybipvgkqqcuevmabdl.supabase.co'
-    key: str = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3eWJpcHZna3FxY3Vldm1hYmRsIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Mjk4NjE2NjMsImV4cCI6MjA0NTQzNzY2M30.aajawhgjIHCije-6BICug6qVuhcuK740rHXmSuQkKO0'
+    url: str = os.getenv('SUPABASE_PROJECT_URL')
+    key: str = os.getenv('SUPABASE_USER_ACCOUNT_KEY')
     return create_client(url, key)
 
 
