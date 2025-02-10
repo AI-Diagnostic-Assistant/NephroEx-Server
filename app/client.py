@@ -1,7 +1,10 @@
 from supabase import create_client
 from flask import request, jsonify
 from functools import wraps
+from dotenv import load_dotenv
+import os
 
+load_dotenv()
 
 def create_sb_client():
     url: str = 'https://lwybipvgkqqcuevmabdl.supabase.co'
@@ -10,8 +13,9 @@ def create_sb_client():
 
 
 def create_service_account_client():
-    url: str = 'https://lwybipvgkqqcuevmabdl.supabase.co'
-    key: str = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx3eWJpcHZna3FxY3Vldm1hYmRsIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTcyOTg2MTY2MywiZXhwIjoyMDQ1NDM3NjYzfQ.pMjAsxj8xM57VlFcJQ4zXR_XIoXkhJ-f64fkwsjZ9xQ'
+    url: str = os.getenv('SUPABASE_PROJECT_URL')
+    key: str = os.getenv('SUPABASE_SERVICE_ACCOUNT_KEY')
+    print("URL: ", url)
     return create_client(url, key)
 
 

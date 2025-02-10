@@ -19,3 +19,4 @@ pyvenv.cfg
 models/
 test/
 
+.env
