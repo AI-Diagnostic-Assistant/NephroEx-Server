@@ -1,7 +1,5 @@
-import json
 import re
 import uuid
-
 import pydicom
 import numpy as np
 import matplotlib.pyplot as plt
@@ -13,8 +11,7 @@ import joblib
 from PIL import Image
 from scipy.stats import skew, kurtosis
 import shap
-import ollama
-
+import google.generativeai as genai
 from app.logic.CNN import Simple3DCNN
 
 feature_maps = None
@@ -463,7 +460,20 @@ def perform_svm_analysis(dicom_read, supabase_client):
 
     shap_data = calculate_shap_data(svm_model_summed, training_data, total_activities_summed.tolist(), prediction)
 
-    return prediction, confidence, roi_activity_array, left_mask, right_mask, total_activities.tolist(), shap_data
+    time_groups = list(range(0, 30, 3))  # [0, 3, 6, ..., 27]
+
+    predicted_label = "healthy" if prediction == 0 else "sick"
+
+
+    textual_explanation = generate_textual_shap_explanation_datapoints(
+        shap_data=shap_data,
+        time_groups=time_groups,
+        predicted_label=predicted_label,
+        confidence=confidence
+    )
+
+
+    return prediction, confidence, roi_activity_array, left_mask, right_mask, total_activities.tolist(), shap_data, textual_explanation
 
 
 def group_2_min_frames(dicom_read):
@@ -658,7 +668,9 @@ def interpret_shap_feature(name, shap_val, value):
         return "Feature impact needs further interpretation."
 
 
-def generate_textual_shap_explanation(shap_values, feature_names, predicted_label, confidence):
+def generate_textual_shap_explanation_features(shap_values, feature_names, predicted_label, confidence):
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
     # Extract necessary information
     shap_contributions = shap_values.values[0].tolist()  # SHAP values for the current instance
 
@@ -696,15 +708,69 @@ def generate_textual_shap_explanation(shap_values, feature_names, predicted_labe
     "The model classifies the patient as [healthy/sick] due to [brief reason]. The most important factors were [Factor 1], [Factor 2], and [Factor 3]. [Explain what each factor means in relation to kidney function]. Overall, these indicators suggest that [summary of model reasoning]."
     """
 
-    MODEL = "deepseek-r1:7b"
+    model = genai.GenerativeModel("gemini-pro")  # Use Gemini Pro model
+    response = model.generate_content(PROMPT)
 
-    result = ollama.generate(model=MODEL, prompt=PROMPT)
-    response = result["response"]
-
-    textual_explanation = remove_think_tags_deepseek(response)
+    textual_explanation = response.text.strip() if hasattr(response, "text") else "No explanation generated."
 
     return textual_explanation
 
+def interpret_shap_time_group(time_group, shap_value, activity_value):
+    """
+    Interprets a SHAP value associated with a 3-minute renogram time group.
+
+    :param time_group: The starting minute of the 3-minute group (e.g., 0, 3, 6, ... 27)
+    :param shap_value: The SHAP value (model impact at this time group)
+    :param activity_value: The summed renogram activity for this group
+    :return: A structured medical interpretation
+    """
+
+    impact = "strongly" if abs(shap_value) > 0.1 else "moderately"
+
+    # General interpretation structure
+    if shap_value > 0:
+        influence_text = f"Increased tracer activity during this period {impact} influenced the model's decision, suggesting that retention patterns were relevant to the classification."
+    else:
+        influence_text = f"Lower tracer activity during this time frame {impact} contributed to the decision, indicating that reduced uptake or faster clearance was important for classification."
+
+    return f"Between {time_group}-{time_group + 3} minutes, the summed activity was {activity_value:.2f}. {influence_text}"
+
+
+def generate_textual_shap_explanation_datapoints(shap_data, time_groups, predicted_label, confidence):
+    genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+    shap_values = np.array(shap_data[0])
+    feature_values = np.array(shap_data[1])
+
+    print("Shap values", shap_values)
+    print("Feature values", feature_values)
+
+    # Construct the textual prompt dynamically
+    # Construct the textual prompt dynamically
+    prompt = f"""
+      You are given renogram data where feature values represent summed intensities over {time_groups}-minute intervals, and SHAP values indicate each interval's contribution to the model's prediction. Your task is to provide an accurate textual explanation of both the renogram trend and SHAP value impact, strictly based on the provided numerical data.
+
+      - Describe the overall trend of the feature values over time **only in terms of increasing, decreasing, or fluctuating**, without assuming any biological meaning.
+      - Explain the SHAP values accurately, noting whether they increase, decrease, or fluctuate over time, without making assumptions about their significance beyond their numerical contribution.
+      - Do not assume a smooth or monotonic trend for either feature values or SHAP values unless explicitly reflected in the data.
+      - Ensure the explanation is factually correct based on the provided values.
+      - Present the explanation as a single coherent paragraph without bullet points.
+
+      Feature values: {feature_values.tolist()}
+      SHAP values: {shap_values.tolist()}
+      Model Prediction: {predicted_label}
+      Model Confidence: {confidence}
+      """
+
+    model = genai.GenerativeModel("gemini-pro")
+    response = model.generate_content(prompt)
+
+    print("response GEMINI", response)
+
+    # Extract text from Gemini response
+    textual_explanation = response.text.strip() if hasattr(response, "text") else "No explanation generated."
+
+    return textual_explanation
 
 def perform_decision_tree_analysis(total_activities):
     total_activities = np.array(total_activities).reshape(1, -1)
@@ -738,11 +804,10 @@ def perform_decision_tree_analysis(total_activities):
     shap_data = [shap_values_list, feature_values_list, base_values_list]  # Explicit conversion
 
     feature_names = ["Mean", "Variance", "Skewness", "Kurtosis"]
-
     predicted_label = "healthy" if prediction == 0 else "sick"
 
-    #textual_explanation = generate_textual_shap_explanation(shap_values, feature_names, predicted_label, confidence)
+    #textual_explanation = generate_textual_shap_explanation_features(shap_values, feature_names, predicted_label, confidence)
 
-    textual_explanation = "hei"
+    textual_explanation = "HEI"
 
     return prediction, confidence, shap_data, textual_explanation

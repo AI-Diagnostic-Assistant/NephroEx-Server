@@ -1,6 +1,4 @@
 import io
-
-import numpy as np
 import pydicom
 from flask import request, jsonify, Blueprint
 import uuid
@@ -94,7 +92,7 @@ def classify(supabase_client):
 
     #CNN and SVM predictions
     cnn_predicted, cnn_confidence = run_single_classification_cnn(dicom_read)
-    svm_predicted, svm_confidence, roi_activity_array, left_mask, right_mask, total_activities, shap_data_svm = perform_svm_analysis(dicom_read, supabase_client)
+    svm_predicted, svm_confidence, roi_activity_array, left_mask, right_mask, total_activities, shap_data_svm, svm_textual_explanation = perform_svm_analysis(dicom_read, supabase_client)
     decision_tree_predicted, decision_tree_confidence, shap_data_dt, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
@@ -193,7 +191,7 @@ def classify(supabase_client):
                 {
                     "classification_id": svm_classification_id,
                     "technique": "SHAP",
-                    "description": "This is a description of the SHAP SVM technique",
+                    "description": svm_textual_explanation,
                     "shap_values_renogram_summed": shap_data_svm
                 },
                 {
