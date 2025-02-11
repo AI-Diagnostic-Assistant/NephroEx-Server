@@ -13,6 +13,7 @@ def create_sb_client():
 
 
 def create_service_account_client():
+    # hvis ikke dette funker kan man prøve os.environ.get('SUPABASE_PROJECT_URL'), etc
     url: str = os.getenv('SUPABASE_PROJECT_URL')
     key: str = os.getenv('SUPABASE_SERVICE_ACCOUNT_KEY')
     print("URL: ", url)
