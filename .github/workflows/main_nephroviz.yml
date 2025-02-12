@@ -83,4 +83,3 @@ jobs:
       - name: 'Deployment Logs'
         if: failure()
         run: cat /home/site/deployments/tools/deploy.log
-          
