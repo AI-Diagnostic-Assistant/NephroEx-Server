@@ -78,4 +78,9 @@ jobs:
         with:
           app-name: 'NephroViz'
           slot-name: 'Production'
+        continue-on-error: true
+
+      - name: 'Deployment Logs'
+        if: failure()
+        run: cat /home/site/deployments/tools/deploy.log
           
