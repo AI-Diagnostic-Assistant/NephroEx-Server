@@ -1,11 +1,10 @@
 import io
 import pydicom
 from flask import request, jsonify, Blueprint
-import uuid
-from app.logic.logic import create_composite_image_rgb, save_image_to_bytes, run_single_classification_cnn, \
+from app.logic.logic import run_single_classification_cnn, \
     perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage, save_total_dicom, create_ROI_contours_png, \
     save_png, perform_decision_tree_analysis, create_and_overlay_heatmaps, save_composite_heatmaps
-from app.client import create_sb_client, authenticate_request
+from app.client import authenticate_request
 
 api = Blueprint('api', __name__)
 
@@ -14,56 +13,6 @@ api = Blueprint('api', __name__)
 @api.route('/index')
 def index():
     return "Hello, World!"
-
-
-@api.route('/users')
-def get_users():
-    supabase_client = create_sb_client()
-    response = supabase_client.table('profiles').select('*').execute()
-    return response.data
-
-
-@api.route('/compositeImages')
-def get_composite_images():
-    supabase_client = create_sb_client()
-    response = supabase_client.storage.from_('composite-images').list()
-    return response
-
-
-@api.route('/process_dicom', methods=['POST'])
-def process_dicom():
-    supabase_client = create_sb_client()
-
-    if 'files' not in request.files:
-        return jsonify({'error': 'No files part in the request'}), 400
-    files = request.files.getlist('files')
-    if len(files) == 0:
-        return jsonify({'error': 'No files selected'}), 400
-
-    try:
-        # Process the DICOM files
-        composite_image = create_composite_image_rgb(files)
-
-        image_io = save_image_to_bytes(composite_image)
-
-        # Generate a unique filename
-        image_filename = f"{uuid.uuid4()}.png"
-
-        # Upload to Supabase Storage
-        bucket = supabase_client.storage.from_('composite-images')
-        bucket.upload(image_filename, image_io, file_options={'content-type': 'image/png'})
-        public_url = bucket.get_public_url(image_filename)
-
-        data = {
-            'image_url': public_url,
-        }
-        supabase_client.table('composite_image').insert(data).execute()
-
-        return jsonify({'image_url': public_url})
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-
 
 @api.route('/classify', methods=['POST'])
 @authenticate_request

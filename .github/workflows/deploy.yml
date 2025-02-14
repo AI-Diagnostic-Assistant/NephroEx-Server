@@ -1,0 +1,33 @@
+name: Deploy to Azure
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v3
+
+      - name: Log in to Azure
+        uses: azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Log in to ACR
+        run: az acr login --name nephotestrg
+
+      - name: Build and Push Docker Image
+        run: |
+          docker build -t nephotestrg.azurecr.io/flask-api:${{ github.sha }} .
+          docker push nephotestrg.azurecr.io/flask-api:${{ github.sha }}
+
+      - name: Deploy to Azure Container Apps
+        run: |
+          az containerapp update \
+            --name nephro-test-app \
+            --resource-group nephro-test-rg \
+            --image nephotestrg.azurecr.io/flask-api:${{ github.sha }}

@@ -6,12 +6,6 @@ import os
 
 load_dotenv()
 
-def create_sb_client():
-    url: str = os.getenv('SUPABASE_PROJECT_URL')
-    key: str = os.getenv('SUPABASE_USER_ACCOUNT_KEY')
-    return create_client(url, key)
-
-
 def create_service_account_client():
     url: str = os.getenv('SUPABASE_PROJECT_URL')
     key: str = os.getenv('SUPABASE_SERVICE_ACCOUNT_KEY')

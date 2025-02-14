@@ -1,12 +1,11 @@
 import re
 import uuid
+import cv2
 import pydicom
 import numpy as np
-import matplotlib.pyplot as plt
 import io
 import torch
 import os
-import cv2
 import joblib
 from PIL import Image
 from scipy.stats import skew, kurtosis
@@ -365,31 +364,6 @@ def compute_activity(image):
     return np.mean(image)
 
 
-def visualize_masks(image, left_mask, right_mask):
-    plt.figure(figsize=(15, 8))
-
-    # Display the original image
-    plt.subplot(2, 3, 1)
-    plt.imshow(image, cmap='gray' if image.ndim == 2 else None)
-    plt.title("Composite Image")
-    plt.axis("off")
-
-    # Display the left kidney mask
-    plt.subplot(2, 3, 4)
-    plt.imshow(left_mask, cmap='gray')
-    plt.title("Left Kidney Mask")
-    plt.axis("off")
-
-    # Display the right kidney mask
-    plt.subplot(2, 3, 5)
-    plt.imshow(right_mask, cmap='gray')
-    plt.title("Right Kidney Mask")
-    plt.axis("off")
-
-    plt.tight_layout()
-    plt.show()
-
-
 def calculate_shap_data(model, training_data, explainer_data, prediction):
     script_dir = os.path.dirname(__file__)
     scaler_path = os.path.join(script_dir, "../../models/svm/scaler_summed.joblib")
@@ -460,10 +434,9 @@ def perform_svm_analysis(dicom_read, supabase_client):
 
     shap_data = calculate_shap_data(svm_model_summed, training_data, total_activities_summed.tolist(), prediction)
 
-    time_groups = list(range(0, 30, 3))  # [0, 3, 6, ..., 27]
+    time_groups = list(range(0, 30, 3))
 
     predicted_label = "healthy" if prediction == 0 else "sick"
-
 
     textual_explanation = generate_textual_shap_explanation_datapoints(
         shap_data=shap_data,
@@ -471,7 +444,6 @@ def perform_svm_analysis(dicom_read, supabase_client):
         predicted_label=predicted_label,
         confidence=confidence
     )
-
 
     return prediction, confidence, roi_activity_array, left_mask, right_mask, total_activities.tolist(), shap_data, textual_explanation
 
@@ -537,17 +509,6 @@ def save_composite_heatmaps(overlayed_images, sb_client):
 
     except Exception as e:
         raise RuntimeError(f"Error processing DICOM file: {str(e)}")
-
-
-def visualize_grouped_frames(grouped_frames):
-    num_frames = len(grouped_frames)
-    fig, axes = plt.subplots(1, num_frames, figsize=(20, 5))
-    for i, frame in enumerate(grouped_frames):
-        normalized_frame = (255 * (frame - frame.min()) / (frame.max() - frame.min())).astype(np.uint8)
-        axes[i].imshow(normalized_frame, cmap="gray")
-        axes[i].set_title(f"Frame Group {i + 1}")
-        axes[i].axis("off")
-    plt.show()
 
 
 def create_ROI_contours_png(mask_left, mask_right):
