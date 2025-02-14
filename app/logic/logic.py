@@ -145,7 +145,7 @@ def run_single_classification_cnn(dicom_read):
     model = Simple3DCNN()
     script_dir = os.path.dirname(__file__)  # Get the directory of the current script
     model_path = os.path.join(script_dir, "../../models/cnn/best_3dcnn_model.pth")
-    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
+    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu"), weights_only=False))
     model.eval()
 
     img = dicom_read.pixel_array.astype(np.float32)
@@ -230,7 +230,7 @@ def load_image(path: str):
 def predict_kidney_masks(composite_image):
     script_dir = os.path.dirname(__file__)
     unet_model_path = os.path.join(script_dir, "../../models/unet/fold_1_pretrained_unet_model.pth")
-    unet_model = torch.load(unet_model_path, map_location=torch.device('cpu'))  # Load the entire model
+    unet_model = torch.load(unet_model_path, map_location=torch.device('cpu'), weights_only=False)  # Load the entire model
     unet_model.eval()
 
     image_tensor = torch.tensor(composite_image).permute(2, 0, 1).unsqueeze(0).float()
