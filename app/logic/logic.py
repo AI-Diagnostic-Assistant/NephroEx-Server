@@ -16,14 +16,20 @@ feature_maps = None
 gradients = None
 
 
-def fetch_model_from_supabase(supabase_client, filename, is_torch_model=False):
+def fetch_model_from_supabase(supabase_client, filename, is_cnn_model=False, is_unet_model=False):
     response = supabase_client.storage.from_("ai-models").download(filename)
 
     if response:
         model_bytes = io.BytesIO(response)
-        if is_torch_model:
+        if is_cnn_model:
             model = Simple3DCNN()
             model.load_state_dict(torch.load(model_bytes, map_location=torch.device("cpu"), weights_only=False))
+            model.eval()
+            print(f"{filename} (Torch Model) loaded successfully.")
+
+            return model
+        if is_unet_model:
+            model = torch.load(model_bytes, map_location=torch.device('cpu'), weights_only=False)
             model.eval()
             print(f"{filename} (Torch Model) loaded successfully.")
 
@@ -34,6 +40,20 @@ def fetch_model_from_supabase(supabase_client, filename, is_torch_model=False):
             return model
     else:
         raise RuntimeError("Failed to fetch model from Supabase. Check permissions or file existence.")
+
+
+def load_training_data_supabase(supabase_client, filename):
+    response = supabase_client.storage.from_("ai-models").download(filename)
+
+    if response:
+        np_bytes = io.BytesIO(response)
+        np_bytes.seek(0)
+        training_data = np.load(np_bytes, allow_pickle=True)
+        print(f"{filename} (NumPy Array) loaded successfully.")
+
+        return training_data
+    else:
+        raise RuntimeError(f"Failed to fetch {filename} from Supabase. Check permissions or file existence.")
 
 
 def save_image_to_bytes(image):
@@ -233,12 +253,7 @@ def load_image(path: str):
     return img
 
 
-def predict_kidney_masks(composite_image):
-    script_dir = os.path.dirname(__file__)
-    unet_model_path = os.path.join(script_dir, "../../models/unet/fold_1_pretrained_unet_model.pth")
-    unet_model = torch.load(unet_model_path, map_location=torch.device('cpu'),
-                            weights_only=False)  # Load the entire model
-    unet_model.eval()
+def predict_kidney_masks(composite_image, unet_model):
 
     image_tensor = torch.tensor(composite_image).permute(2, 0, 1).unsqueeze(0).float()
 
@@ -369,23 +384,20 @@ def compute_activity(image):
     return np.mean(image)
 
 
-def calculate_shap_data(model, training_data, explainer_data, prediction):
-    script_dir = os.path.dirname(__file__)
-    scaler_path = os.path.join(script_dir, "../../models/svm/scaler_summed.joblib")
-    scaler = joblib.load(scaler_path)
+def calculate_shap_data(model, training_data, explainer_data, prediction, svm_scaler):
 
     explainer_data = np.array(explainer_data).reshape(1, -1)
 
     # Scale the explainer_data to match what is used in Google Colab
-    scaled_explainer_data = scaler.transform(explainer_data)
+    scaled_explainer_data = svm_scaler.transform(explainer_data)
 
     explainer = shap.KernelExplainer(model.predict_proba, training_data)
 
     shap_values = explainer(scaled_explainer_data)
 
-    shap_values = shap_values[..., prediction]  # Extract SHAP values for the predicted class
+    shap_values = shap_values[..., prediction]
 
-    feature_values_raw = scaler.inverse_transform(scaled_explainer_data)[0]  # Get original feature values
+    feature_values_raw = svm_scaler.inverse_transform(scaled_explainer_data)[0]  # Get original feature values
 
     shap_values_list = np.array(shap_values.values[0]).tolist()
     feature_values_list = np.array(feature_values_raw).tolist()
@@ -396,27 +408,12 @@ def calculate_shap_data(model, training_data, explainer_data, prediction):
     return shap_data
 
 
-def load_training_data(training_data_path, generated_data):
-    script_dir = os.path.dirname(__file__)
-    training_data_path = os.path.join(script_dir, training_data_path)
-    training_data = np.load(training_data_path, allow_pickle=True)
-
-    print("training_data", training_data.shape)
-    print("generated_data", generated_data.shape)
-
-    if training_data.shape[1] != generated_data.shape[0]:
-        raise ValueError(
-            f"Feature size mismatch! Expected {training_data.shape[1]}, got {generated_data.shape[1]}")
-
-    return training_data
-
-
-def perform_svm_analysis(dicom_read, svm_model, svm_scaler):
+def perform_svm_analysis(dicom_read, svm_model, svm_scaler, svm_training_data, unet_model):
     # Create composite image of the request file
     composite_image = create_composite_image_rgb(dicom_read)
 
     # Predict kidney masks
-    left_mask, right_mask = predict_kidney_masks(composite_image)
+    left_mask, right_mask = predict_kidney_masks(composite_image, unet_model)
 
     # align masks over all frames in the original dicom file
     left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_read)
@@ -431,16 +428,9 @@ def perform_svm_analysis(dicom_read, svm_model, svm_scaler):
     _, _, total_activities_summed = create_renogram(left_mask_alignments_summed, right_mask_alignments_summed)
 
     # Predict CKD stage with SVM model
-    prediction, confidence = run_single_classification_svm(total_activities_summed, svm_model,
-                                                           svm_scaler)  # total activities
+    prediction, confidence = run_single_classification_svm(total_activities_summed, svm_model, svm_scaler)
 
-    training_data = load_training_data("../../models/svm/svm_best_training_data.npy", total_activities_summed)
-
-    script_dir = os.path.dirname(__file__)
-    svm_model_path = os.path.join(script_dir, "../../models/svm/svm_best_model_summed.joblib")
-    svm_model_summed = joblib.load(svm_model_path)
-
-    shap_data = calculate_shap_data(svm_model_summed, training_data, total_activities_summed.tolist(), prediction)
+    shap_data = calculate_shap_data(svm_model, svm_training_data, total_activities_summed.tolist(), prediction, svm_scaler)
 
     time_groups = list(range(0, 30, 3))
 
@@ -722,22 +712,14 @@ def generate_textual_shap_explanation_datapoints(shap_data, time_groups, predict
     return textual_explanation
 
 
-def perform_decision_tree_analysis(total_activities, dt_model):
+def perform_decision_tree_analysis(total_activities, dt_model, dt_training_data):
     total_activities = np.array(total_activities).reshape(1, -1)
 
     extracted_features = extract_statistical_features(total_activities)
 
     prediction, confidence, dt_model = run_single_classification_dt(extracted_features, dt_model)
 
-    script_dir = os.path.dirname(__file__)
-    training_data_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_training_data.npy")
-    X_train_sample = np.load(training_data_path, allow_pickle=True)
-
-    if X_train_sample.shape[1] != extracted_features.shape[1]:
-        raise ValueError(
-            f"Feature size mismatch! Expected {X_train_sample.shape[1]}, got {extracted_features.shape[1]}")
-
-    explainer = shap.Explainer(dt_model, X_train_sample)
+    explainer = shap.Explainer(dt_model, dt_training_data)
     shap_values = explainer(extracted_features)
 
     shap_values = shap_values[..., prediction]
@@ -751,6 +733,7 @@ def perform_decision_tree_analysis(total_activities, dt_model):
     feature_names = ["Mean", "Variance", "Skewness", "Kurtosis"]
     predicted_label = "healthy" if prediction == 0 else "sick"
 
-    textual_explanation = generate_textual_shap_explanation_features(shap_values, feature_names, predicted_label, confidence)
+    textual_explanation = generate_textual_shap_explanation_features(shap_values, feature_names, predicted_label,
+                                                                     confidence)
 
     return prediction, confidence, shap_data, textual_explanation

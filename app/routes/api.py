@@ -4,17 +4,21 @@ from flask import request, jsonify, Blueprint
 from app.logic.logic import run_single_classification_cnn, \
     perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage, save_total_dicom, create_ROI_contours_png, \
     save_png, perform_decision_tree_analysis, create_and_overlay_heatmaps, save_composite_heatmaps, \
-    fetch_model_from_supabase
+    fetch_model_from_supabase, load_training_data_supabase
 from app.client import authenticate_request, create_service_account_client
 
 api = Blueprint('api', __name__)
 
 supabase_client = create_service_account_client()
 
-cnn_model = fetch_model_from_supabase(supabase_client, "best_3dcnn_model.pth", is_torch_model=True)
+cnn_model = fetch_model_from_supabase(supabase_client, "best_3dcnn_model.pth", is_cnn_model=True)
 svm_model = fetch_model_from_supabase(supabase_client, "svm_model_summed.joblib")
 svm_scaler = fetch_model_from_supabase(supabase_client, "svm_scaler_summed.joblib")
 dt_model = fetch_model_from_supabase(supabase_client, "decision_tree_model.joblib")
+svm_training_data = load_training_data_supabase(supabase_client, "svm_training_data.npy")
+dt_training_data = load_training_data_supabase(supabase_client, "decision_tree_training_data.npy")
+unet_model = fetch_model_from_supabase(supabase_client, "unet_model.pth", is_unet_model=True)
+
 
 @api.route('/')
 @api.route('/index')
@@ -48,8 +52,8 @@ def classify(supabase_client):
 
     # CNN and SVM predictions
     cnn_predicted, cnn_confidence = run_single_classification_cnn(dicom_read, cnn_model)
-    svm_predicted, svm_confidence, roi_activity_array, left_mask, right_mask, total_activities, shap_data_svm, svm_textual_explanation = perform_svm_analysis(dicom_read, svm_model, svm_scaler)
-    decision_tree_predicted, decision_tree_confidence, shap_data_dt, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities, dt_model)
+    svm_predicted, svm_confidence, roi_activity_array, left_mask, right_mask, total_activities, shap_data_svm, svm_textual_explanation = perform_svm_analysis(dicom_read, svm_model, svm_scaler, svm_training_data, unet_model)
+    decision_tree_predicted, decision_tree_confidence, shap_data_dt, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities, dt_model, dt_training_data)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
