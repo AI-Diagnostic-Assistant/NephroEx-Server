@@ -3,11 +3,18 @@ import pydicom
 from flask import request, jsonify, Blueprint
 from app.logic.logic import run_single_classification_cnn, \
     perform_svm_analysis, group_2_min_frames, save_summed_frames_to_storage, save_total_dicom, create_ROI_contours_png, \
-    save_png, perform_decision_tree_analysis, create_and_overlay_heatmaps, save_composite_heatmaps
-from app.client import authenticate_request
+    save_png, perform_decision_tree_analysis, create_and_overlay_heatmaps, save_composite_heatmaps, \
+    fetch_model_from_supabase
+from app.client import authenticate_request, create_service_account_client
 
 api = Blueprint('api', __name__)
 
+supabase_client = create_service_account_client()
+
+cnn_model = fetch_model_from_supabase(supabase_client, "best_3dcnn_model.pth", is_torch_model=True)
+svm_model = fetch_model_from_supabase(supabase_client, "svm_model_summed.joblib")
+svm_scaler = fetch_model_from_supabase(supabase_client, "svm_scaler_summed.joblib")
+dt_model = fetch_model_from_supabase(supabase_client, "decision_tree_model.joblib")
 
 @api.route('/')
 @api.route('/index')
@@ -29,7 +36,7 @@ def classify(supabase_client):
     if len(dicom_file) == 0:
         return jsonify({'error': 'No files selected'}), 400
 
-    #Save stream to memory and read one time
+    # Save stream to memory and read one time
     dicom_stream = dicom_file[0].stream.read()
     dicom_read = pydicom.dcmread(io.BytesIO(dicom_stream))
 
@@ -39,10 +46,10 @@ def classify(supabase_client):
 
     storage_ids = save_summed_frames_to_storage(grouped_frames, supabase_client)
 
-    #CNN and SVM predictions
-    cnn_predicted, cnn_confidence = run_single_classification_cnn(dicom_read)
-    svm_predicted, svm_confidence, roi_activity_array, left_mask, right_mask, total_activities, shap_data_svm, svm_textual_explanation = perform_svm_analysis(dicom_read, supabase_client)
-    decision_tree_predicted, decision_tree_confidence, shap_data_dt, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities)
+    # CNN and SVM predictions
+    cnn_predicted, cnn_confidence = run_single_classification_cnn(dicom_read, cnn_model)
+    svm_predicted, svm_confidence, roi_activity_array, left_mask, right_mask, total_activities, shap_data_svm, svm_textual_explanation = perform_svm_analysis(dicom_read, svm_model, svm_scaler)
+    decision_tree_predicted, decision_tree_confidence, shap_data_dt, decision_tree_textual_explanation = perform_decision_tree_analysis(total_activities, dt_model)
 
     svm_predicted_label = "healthy" if svm_predicted == 0 else "sick"
     cnn_predicted_label = "healthy" if cnn_predicted == 0 else "sick"
@@ -52,11 +59,11 @@ def classify(supabase_client):
 
     storage_heatmap_paths = save_composite_heatmaps(heatmap_overlays, supabase_client)
 
-    #Create and upload ROI contours
+    # Create and upload ROI contours
     transparent_contour_image = create_ROI_contours_png(left_mask, right_mask)
     roi_contour_object_path = save_png(transparent_contour_image, "roi_contours", supabase_client)
 
-    #Insert into supabase database
+    # Insert into supabase database
     try:
         report_response = (
             supabase_client.table("report")

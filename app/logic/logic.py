@@ -1,4 +1,3 @@
-import re
 import uuid
 import cv2
 import pydicom
@@ -15,6 +14,26 @@ from app.logic.CNN import Simple3DCNN
 
 feature_maps = None
 gradients = None
+
+
+def fetch_model_from_supabase(supabase_client, filename, is_torch_model=False):
+    response = supabase_client.storage.from_("ai-models").download(filename)
+
+    if response:
+        model_bytes = io.BytesIO(response)
+        if is_torch_model:
+            model = Simple3DCNN()
+            model.load_state_dict(torch.load(model_bytes, map_location=torch.device("cpu"), weights_only=False))
+            model.eval()
+            print(f"{filename} (Torch Model) loaded successfully.")
+
+            return model
+        else:
+            model = joblib.load(model_bytes)
+            print(f"{filename} (Joblib Model/Scaler) loaded successfully.")
+            return model
+    else:
+        raise RuntimeError("Failed to fetch model from Supabase. Check permissions or file existence.")
 
 
 def save_image_to_bytes(image):
@@ -141,26 +160,20 @@ def create_and_overlay_heatmaps(dicom_read):
     return overlayed_images
 
 
-def run_single_classification_cnn(dicom_read):
-    model = Simple3DCNN()
-    script_dir = os.path.dirname(__file__)  # Get the directory of the current script
-    model_path = os.path.join(script_dir, "../../models/cnn/best_3dcnn_model.pth")
-    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu"), weights_only=False))
-    model.eval()
-
+def run_single_classification_cnn(dicom_read, cnn_model):
     img = dicom_read.pixel_array.astype(np.float32)
     img /= np.max(img)  # Normalize
     volume_tensor = torch.tensor(img, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
-    model.conv3.register_forward_hook(forward_hook)
-    model.conv3.register_backward_hook(backward_hook)
+    cnn_model.conv3.register_forward_hook(forward_hook)
+    cnn_model.conv3.register_backward_hook(backward_hook)
 
-    output = model(volume_tensor)
+    output = cnn_model(volume_tensor)
     predicted = torch.argmax(output, dim=1)
 
     predicted_class = predicted.item()
 
-    model.zero_grad()
+    cnn_model.zero_grad()
 
     # Perform backward pass for the target class
     target_class = predicted_class  # Example target class
@@ -175,20 +188,13 @@ def run_single_classification_cnn(dicom_read):
 
     print(confidence)
 
-
     return predicted_class, confidence
 
 
-def run_single_classification_svm(roi_activity_array):
-    script_dir = os.path.dirname(__file__)
-    svm_model_path = os.path.join(script_dir, "../../models/svm/svm_best_model_summed.joblib")
-    scaler_path = os.path.join(script_dir, "../../models/svm/scaler_summed.joblib")
-    svm_model = joblib.load(svm_model_path)
-    scaler = joblib.load(scaler_path)
-
+def run_single_classification_svm(roi_activity_array, svm_model, svm_scaler):
     roi_activity_array = np.array(roi_activity_array).reshape(1, -1)
 
-    scaled_data = scaler.transform(roi_activity_array)
+    scaled_data = svm_scaler.transform(roi_activity_array)
 
     print("scaled roi activity", scaled_data.shape)
 
@@ -230,7 +236,8 @@ def load_image(path: str):
 def predict_kidney_masks(composite_image):
     script_dir = os.path.dirname(__file__)
     unet_model_path = os.path.join(script_dir, "../../models/unet/fold_1_pretrained_unet_model.pth")
-    unet_model = torch.load(unet_model_path, map_location=torch.device('cpu'), weights_only=False)  # Load the entire model
+    unet_model = torch.load(unet_model_path, map_location=torch.device('cpu'),
+                            weights_only=False)  # Load the entire model
     unet_model.eval()
 
     image_tensor = torch.tensor(composite_image).permute(2, 0, 1).unsqueeze(0).float()
@@ -285,8 +292,8 @@ def align_masks_over_frames(left_kidney_mask, right_kidney_mask, dicom_read):
     return left_mask_alignments, right_mask_alignments
 
 
-
-def align_masks_over_summed_frames(left_kidney_mask, right_kidney_mask, dicom_read, frame_interval_seconds=10, sum_duration_minutes=3):
+def align_masks_over_summed_frames(left_kidney_mask, right_kidney_mask, dicom_read, frame_interval_seconds=10,
+                                   sum_duration_minutes=3):
     left_mask_alignments_summed = []
     right_mask_alignments_summed = []
 
@@ -342,8 +349,6 @@ def align_masks_over_summed_frames(left_kidney_mask, right_kidney_mask, dicom_re
     return left_mask_alignments_summed, right_mask_alignments_summed
 
 
-
-
 def create_renogram(left_mask_alignments, right_mask_alignments):
     left_activities = []
     right_activities = []
@@ -390,6 +395,7 @@ def calculate_shap_data(model, training_data, explainer_data, prediction):
 
     return shap_data
 
+
 def load_training_data(training_data_path, generated_data):
     script_dir = os.path.dirname(__file__)
     training_data_path = os.path.join(script_dir, training_data_path)
@@ -405,7 +411,7 @@ def load_training_data(training_data_path, generated_data):
     return training_data
 
 
-def perform_svm_analysis(dicom_read, supabase_client):
+def perform_svm_analysis(dicom_read, svm_model, svm_scaler):
     # Create composite image of the request file
     composite_image = create_composite_image_rgb(dicom_read)
 
@@ -414,7 +420,8 @@ def perform_svm_analysis(dicom_read, supabase_client):
 
     # align masks over all frames in the original dicom file
     left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_read)
-    left_mask_alignments_summed, right_mask_alignments_summed = align_masks_over_summed_frames(left_mask, right_mask, dicom_read)
+    left_mask_alignments_summed, right_mask_alignments_summed = align_masks_over_summed_frames(left_mask, right_mask,
+                                                                                               dicom_read)
 
     # Create renogram over all 180 frames from the predicted masks
     left_activities, right_activities, total_activities = create_renogram(left_mask_alignments, right_mask_alignments)
@@ -424,7 +431,8 @@ def perform_svm_analysis(dicom_read, supabase_client):
     _, _, total_activities_summed = create_renogram(left_mask_alignments_summed, right_mask_alignments_summed)
 
     # Predict CKD stage with SVM model
-    prediction, confidence = run_single_classification_svm(total_activities_summed)  # total activities
+    prediction, confidence = run_single_classification_svm(total_activities_summed, svm_model,
+                                                           svm_scaler)  # total activities
 
     training_data = load_training_data("../../models/svm/svm_best_training_data.npy", total_activities_summed)
 
@@ -537,7 +545,6 @@ def save_png(image, bucket: str, supabase_client):
 
     image_io = save_image_to_bytes(img)
 
-    # Upload to Supabase storage
     storage_id = uuid.uuid4()
     file_name = f"{storage_id}.png"
 
@@ -547,31 +554,19 @@ def save_png(image, bucket: str, supabase_client):
 
 
 def extract_statistical_features(X):
-    """Extract mean, variance, skewness, and kurtosis for each renogram in X."""
     return np.array([
         [np.mean(curve), np.var(curve), skew(curve), kurtosis(curve)]
         for curve in X
     ])
 
 
-def run_single_classification_dt(extracted_features):
-    script_dir = os.path.dirname(__file__)
-    dt_model_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_model.joblib")
-    dt_model = joblib.load(dt_model_path)  # Load the entire model
-
+def run_single_classification_dt(extracted_features, dt_model):
     probabilities = dt_model.predict_proba(extracted_features)[0]
     predicted_class = dt_model.predict(extracted_features)
 
     confidence = probabilities[predicted_class]
 
     return int(predicted_class), float(confidence), dt_model
-
-
-def remove_think_tags_deepseek(text: str):
-    cleaned_text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-    cleaned_text = cleaned_text.strip()
-
-    return cleaned_text
 
 
 def interpret_shap_feature(name, shap_val, value):
@@ -633,16 +628,16 @@ def generate_textual_shap_explanation_features(shap_values, feature_names, predi
     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
     # Extract necessary information
-    shap_contributions = shap_values.values[0].tolist()  # SHAP values for the current instance
+    shap_contributions = shap_values.values[0].tolist()
 
-    feature_values = shap_values.data[0].tolist()  # Extracted feature values
+    feature_values = shap_values.data[0].tolist()
 
     feature_importance = sorted(
         zip(feature_names, shap_contributions, feature_values), key=lambda x: abs(x[1]), reverse=True
     )
 
     # Identify top features
-    top_features = feature_importance[:3]  # Taking the top 3 most impactful features
+    top_features = feature_importance[:3]
 
     # Format the features into a structured text prompt
     feature_text = "\n".join([
@@ -669,12 +664,13 @@ def generate_textual_shap_explanation_features(shap_values, feature_names, predi
     "The model classifies the patient as [healthy/sick] due to [brief reason]. The most important factors were [Factor 1], [Factor 2], and [Factor 3]. [Explain what each factor means in relation to kidney function]. Overall, these indicators suggest that [summary of model reasoning]."
     """
 
-    model = genai.GenerativeModel("gemini-pro")  # Use Gemini Pro model
+    model = genai.GenerativeModel("gemini-pro")
     response = model.generate_content(PROMPT)
 
     textual_explanation = response.text.strip() if hasattr(response, "text") else "No explanation generated."
 
     return textual_explanation
+
 
 def interpret_shap_time_group(time_group, shap_value, activity_value):
     """
@@ -703,11 +699,6 @@ def generate_textual_shap_explanation_datapoints(shap_data, time_groups, predict
     shap_values = np.array(shap_data[0])
     feature_values = np.array(shap_data[1])
 
-    print("Shap values", shap_values)
-    print("Feature values", feature_values)
-
-    # Construct the textual prompt dynamically
-    # Construct the textual prompt dynamically
     prompt = f"""
       You are given renogram data where feature values represent summed intensities over {time_groups}-minute intervals, and SHAP values indicate each interval's contribution to the model's prediction. Your task is to provide an accurate textual explanation of both the renogram trend and SHAP value impact, strictly based on the provided numerical data.
 
@@ -726,19 +717,17 @@ def generate_textual_shap_explanation_datapoints(shap_data, time_groups, predict
     model = genai.GenerativeModel("gemini-pro")
     response = model.generate_content(prompt)
 
-    print("response GEMINI", response)
-
-    # Extract text from Gemini response
     textual_explanation = response.text.strip() if hasattr(response, "text") else "No explanation generated."
 
     return textual_explanation
 
-def perform_decision_tree_analysis(total_activities):
+
+def perform_decision_tree_analysis(total_activities, dt_model):
     total_activities = np.array(total_activities).reshape(1, -1)
 
     extracted_features = extract_statistical_features(total_activities)
 
-    prediction, confidence, dt_model = run_single_classification_dt(extracted_features)
+    prediction, confidence, dt_model = run_single_classification_dt(extracted_features, dt_model)
 
     script_dir = os.path.dirname(__file__)
     training_data_path = os.path.join(script_dir, "../../models/decision_tree/decision_tree_training_data.npy")
@@ -748,27 +737,20 @@ def perform_decision_tree_analysis(total_activities):
         raise ValueError(
             f"Feature size mismatch! Expected {X_train_sample.shape[1]}, got {extracted_features.shape[1]}")
 
-    # Explain the prediction
     explainer = shap.Explainer(dt_model, X_train_sample)
     shap_values = explainer(extracted_features)
 
-    #print("shap values DT", shap_values)
+    shap_values = shap_values[..., prediction]
 
-    shap_values = shap_values[..., prediction]  # Extract SHAP values for the predicted class
+    shap_values_list = np.array(shap_values.values[0]).tolist()
+    feature_values_list = np.array(shap_values.data[0]).tolist()
+    base_values_list = np.full_like(shap_values_list, shap_values.base_values[0]).tolist()
 
-    #print("shap values predicted class DT", shap_values)
-
-    shap_values_list = np.array(shap_values.values[0]).tolist()  # Convert NumPy array to a Python list
-    feature_values_list = np.array(shap_values.data[0]).tolist()  # Corresponding feature values
-    base_values_list = np.full_like(shap_values_list, shap_values.base_values[0]).tolist()  # Shape: (4,)
-
-    shap_data = [shap_values_list, feature_values_list, base_values_list]  # Explicit conversion
+    shap_data = [shap_values_list, feature_values_list, base_values_list]
 
     feature_names = ["Mean", "Variance", "Skewness", "Kurtosis"]
     predicted_label = "healthy" if prediction == 0 else "sick"
 
-    #textual_explanation = generate_textual_shap_explanation_features(shap_values, feature_names, predicted_label, confidence)
-
-    textual_explanation = "HEI"
+    textual_explanation = generate_textual_shap_explanation_features(shap_values, feature_names, predicted_label, confidence)
 
     return prediction, confidence, shap_data, textual_explanation

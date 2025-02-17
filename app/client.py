@@ -9,7 +9,7 @@ load_dotenv()
 def create_service_account_client():
     url: str = os.getenv('SUPABASE_PROJECT_URL')
     key: str = os.getenv('SUPABASE_SERVICE_ACCOUNT_KEY')
-    print("URL: ", url)
+
     return create_client(url, key)
 
 
