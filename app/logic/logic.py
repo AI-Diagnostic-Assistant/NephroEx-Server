@@ -642,9 +642,8 @@ def generate_textual_shap_explanation_features(shap_values, feature_names, predi
 
     {feature_text}
 
-    Based on these factors, provide a structured explanation in **clear and readable plain text**.
+    Based on these factors, provide a structured explanation in **markdown**.
 
-    - Do NOT use any special formatting like asterisks (*), markdown symbols, or bullet points.
     - The response should be in full sentences and structured like a professional medical explanation.
     - Keep it concise but informative.
     - Do not include disclaimers.
@@ -696,7 +695,7 @@ def generate_textual_shap_explanation_datapoints(shap_data, time_groups, predict
       - Explain the SHAP values accurately, noting whether they increase, decrease, or fluctuate over time, without making assumptions about their significance beyond their numerical contribution.
       - Do not assume a smooth or monotonic trend for either feature values or SHAP values unless explicitly reflected in the data.
       - Ensure the explanation is factually correct based on the provided values.
-      - Present the explanation as a single coherent paragraph without bullet points.
+      - Present the explanation in *markdown* format.
 
       Feature values: {feature_values.tolist()}
       SHAP values: {shap_values.tolist()}
