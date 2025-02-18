@@ -14,9 +14,9 @@ supabase_client = create_service_account_client()
 cnn_model = fetch_model_from_supabase(supabase_client, "best_3dcnn_model.pth", is_cnn_model=True)
 svm_model = fetch_model_from_supabase(supabase_client, "svm_model_summed.joblib")
 svm_scaler = fetch_model_from_supabase(supabase_client, "svm_scaler_summed.joblib")
-dt_model = fetch_model_from_supabase(supabase_client, "decision_tree_model.joblib")
 svm_training_data = load_training_data_supabase(supabase_client, "svm_training_data.npy")
-dt_training_data = load_training_data_supabase(supabase_client, "decision_tree_training_data.npy")
+dt_model = fetch_model_from_supabase(supabase_client, "random_forest_best_final.joblib")
+dt_training_data = load_training_data_supabase(supabase_client, "random_forest_training_data_best_final.npy")
 unet_model = fetch_model_from_supabase(supabase_client, "unet_model.pth", is_unet_model=True)
 
 
