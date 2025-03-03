@@ -653,7 +653,7 @@ def generate_textual_shap_explanation_features(shap_values, feature_names, predi
     "The model classifies the patient as [healthy/sick] due to [brief reason]. The most important factors were [Factor 1], [Factor 2], and [Factor 3]. [Explain what each factor means in relation to kidney function]. Overall, these indicators suggest that [summary of model reasoning]."
     """
 
-    model = genai.GenerativeModel("gemini-pro")
+    model = genai.GenerativeModel("gemini-1.5-pro-latest")
     response = model.generate_content(PROMPT)
 
     textual_explanation = response.text.strip() if hasattr(response, "text") else "No explanation generated."
@@ -703,7 +703,7 @@ def generate_textual_shap_explanation_datapoints(shap_data, time_groups, predict
       Model Confidence: {confidence}
       """
 
-    model = genai.GenerativeModel("gemini-pro")
+    model = genai.GenerativeModel("gemini-1.5-pro-latest")
     response = model.generate_content(prompt)
 
     textual_explanation = response.text.strip() if hasattr(response, "text") else "No explanation generated."
