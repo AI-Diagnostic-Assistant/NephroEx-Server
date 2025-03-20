@@ -199,24 +199,15 @@ def run_single_classification_cnn(dicom_read, cnn_model):
     target_class = predicted_class  # Example target class
     output[:, target_class].backward()
 
-    print(f"Predicted class: {predicted_class}")
-    print("Output probabilities:", output.flatten())
-
-    print("output", output)
-
     confidence = output.flatten().tolist()[predicted_class]
-
-    print(confidence)
 
     return predicted_class, confidence
 
 
-def run_single_classification_svm(roi_activity_array, svm_model, svm_scaler):
+def run_single_classification_datapoints(roi_activity_array, svm_model, scaler):
     roi_activity_array = np.array(roi_activity_array).reshape(1, -1)
 
-    scaled_data = svm_scaler.transform(roi_activity_array)
-
-    print("scaled roi activity", scaled_data.shape)
+    scaled_data = scaler.transform(roi_activity_array)
 
     probabilities = svm_model.predict_proba(scaled_data)[0]
     predicted_class = np.argmax(probabilities)
@@ -424,9 +415,9 @@ def calculate_shap_data_features(model, training_data, explainer_data, classific
 
 def perform_datapoints_analysis(svm_model, svm_scaler, svm_training_data, left_activities_summed, right_activities_summed):
 
-    # Predict CKD stage with SVM model
-    left_uto_classification, left_uto_confidence = run_single_classification_svm(left_activities_summed, svm_model, svm_scaler)
-    right_uto_classification, right_uto_confidence = run_single_classification_svm(right_activities_summed, svm_model, svm_scaler)
+    # Classify UTO for left and right kidneys
+    left_uto_classification, left_uto_confidence = run_single_classification_datapoints(left_activities_summed, svm_model, svm_scaler)
+    right_uto_classification, right_uto_confidence = run_single_classification_datapoints(right_activities_summed, svm_model, svm_scaler)
 
     shap_data_left_uto_classification = calculate_shap_data_datapoints(svm_model, svm_training_data, left_activities_summed.tolist(), left_uto_classification, svm_scaler)
     shap_data_right_uto_classification = calculate_shap_data_datapoints(svm_model, svm_training_data, right_activities_summed.tolist(), right_uto_classification, svm_scaler)
