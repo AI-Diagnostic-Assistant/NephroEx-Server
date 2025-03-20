@@ -199,24 +199,15 @@ def run_single_classification_cnn(dicom_read, cnn_model):
     target_class = predicted_class  # Example target class
     output[:, target_class].backward()
 
-    print(f"Predicted class: {predicted_class}")
-    print("Output probabilities:", output.flatten())
-
-    print("output", output)
-
     confidence = output.flatten().tolist()[predicted_class]
-
-    print(confidence)
 
     return predicted_class, confidence
 
 
-def run_single_classification_svm(roi_activity_array, svm_model, svm_scaler):
+def run_single_classification_datapoints(roi_activity_array, svm_model, scaler):
     roi_activity_array = np.array(roi_activity_array).reshape(1, -1)
 
-    scaled_data = svm_scaler.transform(roi_activity_array)
-
-    print("scaled roi activity", scaled_data.shape)
+    scaled_data = scaler.transform(roi_activity_array)
 
     probabilities = svm_model.predict_proba(scaled_data)[0]
     predicted_class = np.argmax(probabilities)
@@ -367,7 +358,6 @@ def align_masks_over_summed_frames(left_kidney_mask, right_kidney_mask, dicom_re
 def create_renogram(left_mask_alignments, right_mask_alignments):
     left_activities = []
     right_activities = []
-    total_activities = []
 
     for frame_idx in range(len(left_mask_alignments)):
         left_activity = compute_activity(left_mask_alignments[frame_idx])
@@ -375,20 +365,18 @@ def create_renogram(left_mask_alignments, right_mask_alignments):
 
         left_activities.append(left_activity)
         right_activities.append(right_activity)
-        total_activities.append(left_activity + right_activity)
 
-    return np.array(left_activities), np.array(right_activities), np.array(total_activities)
+    return np.array(left_activities), np.array(right_activities)
 
 
 def compute_activity(image):
     return np.mean(image)
 
 
-def calculate_shap_data(model, training_data, explainer_data, prediction, svm_scaler):
+def calculate_shap_data_datapoints(model, training_data, explainer_data, prediction, svm_scaler):
 
     explainer_data = np.array(explainer_data).reshape(1, -1)
 
-    # Scale the explainer_data to match what is used in Google Colab
     scaled_explainer_data = svm_scaler.transform(explainer_data)
 
     explainer = shap.KernelExplainer(model.predict_proba, training_data)
@@ -408,42 +396,54 @@ def calculate_shap_data(model, training_data, explainer_data, prediction, svm_sc
     return shap_data
 
 
-def perform_svm_analysis(dicom_read, svm_model, svm_scaler, svm_training_data, unet_model):
-    # Create composite image of the request file
-    composite_image = create_composite_image_rgb(dicom_read)
+def calculate_shap_data_features(model, training_data, explainer_data, classification):
+    explainer = shap.Explainer(model, training_data)
 
-    # Predict kidney masks
-    left_mask, right_mask = predict_kidney_masks(composite_image, unet_model)
+    shap_values = explainer(explainer_data)
 
-    # align masks over all frames in the original dicom file
-    left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_read)
-    left_mask_alignments_summed, right_mask_alignments_summed = align_masks_over_summed_frames(left_mask, right_mask,
-                                                                                               dicom_read)
+    shap_values = shap_values[..., classification]
 
-    # Create renogram over all 180 frames from the predicted masks
-    left_activities, right_activities, total_activities = create_renogram(left_mask_alignments, right_mask_alignments)
-    roi_activity_array = [left_activities.tolist(), right_activities.tolist(), total_activities.tolist()]
+    shap_values_list = np.array(shap_values.values[0]).tolist()
+    feature_values_list = np.array(shap_values.data[0]).tolist()
 
-    # Create renogram over 3 min summed frames from the predicted masks
-    _, _, total_activities_summed = create_renogram(left_mask_alignments_summed, right_mask_alignments_summed)
+    base_values_list = np.full_like(shap_values_list, shap_values.base_values[0]).tolist()
 
-    # Predict CKD stage with SVM model
-    prediction, confidence = run_single_classification_svm(total_activities_summed, svm_model, svm_scaler)
+    shap_data = [shap_values_list, feature_values_list, base_values_list]
 
-    shap_data = calculate_shap_data(svm_model, svm_training_data, total_activities_summed.tolist(), prediction, svm_scaler)
+    return shap_data, shap_values
+
+
+def perform_datapoints_analysis(svm_model, svm_scaler, svm_training_data, left_activities_summed, right_activities_summed):
+
+    # Classify UTO for left and right kidneys
+    left_uto_classification, left_uto_confidence = run_single_classification_datapoints(left_activities_summed, svm_model, svm_scaler)
+    right_uto_classification, right_uto_confidence = run_single_classification_datapoints(right_activities_summed, svm_model, svm_scaler)
+
+    shap_data_left_uto_classification = calculate_shap_data_datapoints(svm_model, svm_training_data, left_activities_summed.tolist(), left_uto_classification, svm_scaler)
+    shap_data_right_uto_classification = calculate_shap_data_datapoints(svm_model, svm_training_data, right_activities_summed.tolist(), right_uto_classification, svm_scaler)
 
     time_groups = list(range(0, 30, 3))
 
-    predicted_label = "healthy" if prediction == 0 else "sick"
+    classified_left_label = "healthy" if left_uto_classification == 0 else "sick"
+    classified_right_label = "healthy" if right_uto_classification == 0 else "sick"
 
-    textual_explanation = generate_textual_shap_explanation_datapoints(
-        shap_data=shap_data,
+    left_textual_explanation = generate_single_textual_shap_explanation_datapoints(
+        shap_data=shap_data_left_uto_classification,
         time_groups=time_groups,
-        predicted_label=predicted_label,
-        confidence=confidence
+        classified_label=classified_left_label,
+        confidence=left_uto_confidence,
+        kidney_label="left"
     )
 
-    return prediction, confidence, roi_activity_array, left_mask, right_mask, total_activities.tolist(), shap_data, textual_explanation
+    right_textual_explanation = generate_single_textual_shap_explanation_datapoints(
+        shap_data=shap_data_right_uto_classification,
+        time_groups=time_groups,
+        classified_label=classified_right_label,
+        confidence=right_uto_confidence,
+        kidney_label="right"
+    )
+
+    return left_uto_classification, right_uto_classification, left_uto_confidence, right_uto_confidence, shap_data_left_uto_classification, shap_data_right_uto_classification, left_textual_explanation, right_textual_explanation, classified_left_label, classified_right_label
 
 
 def group_2_min_frames(dicom_read):
@@ -462,11 +462,13 @@ def group_2_min_frames(dicom_read):
     return grouped_frames
 
 
-def save_summed_frames_to_storage(grouped_frames, sb_client):
+def group_2_min_frames_and_save_to_storage(dicom_read, sb_client):
     storage_ids = []
 
+    grouped_2_min_frames = group_2_min_frames(dicom_read)
+
     try:
-        for idx, frame in enumerate(grouped_frames):
+        for idx, frame in enumerate(grouped_2_min_frames):
             normalized_frame = (255 * (frame - frame.min()) / (frame.max() - frame.min())).astype(np.uint8)
 
             path = save_png(normalized_frame, 'grouped-dicom-frames', sb_client)
@@ -543,14 +545,15 @@ def save_png(image, bucket: str, supabase_client):
     return response.path
 
 
+
+#THIS HAS TO BE CHANGED
 def extract_statistical_features(X):
     return np.array([
         [np.mean(curve), np.var(curve), skew(curve), kurtosis(curve)]
         for curve in X
     ])
 
-
-def run_single_classification_dt(extracted_features, dt_model):
+def run_single_uto_classification_features(extracted_features, dt_model):
     probabilities = dt_model.predict_proba(extracted_features)[0]
     predicted_class = dt_model.predict(extracted_features)
 
@@ -614,8 +617,10 @@ def interpret_shap_feature(name, shap_val, value):
         return "Feature impact needs further interpretation."
 
 
-def generate_textual_shap_explanation_features(shap_values, feature_names, predicted_label, confidence):
+def generate_single_textual_shap_explanation_features(shap_values, predicted_label, confidence, kidney_label):
     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+
+    feature_names = ["Mean", "Variance", "Skewness", "Kurtosis"]
 
     # Extract necessary information
     shap_contributions = shap_values.values[0].tolist()
@@ -636,7 +641,7 @@ def generate_textual_shap_explanation_features(shap_values, feature_names, predi
     ])
 
     PROMPT = f"""
-    The model predicts that the patient is {predicted_label} with a confidence of {confidence:.2f}.
+    The model classifies that the {kidney_label} kidney as {predicted_label} with a confidence of {confidence:.2f}.
 
     The decision was based on the following key factors:
 
@@ -653,7 +658,7 @@ def generate_textual_shap_explanation_features(shap_values, feature_names, predi
     "The model classifies the patient as [healthy/sick] due to [brief reason]. The most important factors were [Factor 1], [Factor 2], and [Factor 3]. [Explain what each factor means in relation to kidney function]. Overall, these indicators suggest that [summary of model reasoning]."
     """
 
-    model = genai.GenerativeModel("gemini-1.5-pro-latest")
+    model = genai.GenerativeModel("gemini-2.0-flash")
     response = model.generate_content(PROMPT)
 
     textual_explanation = response.text.strip() if hasattr(response, "text") else "No explanation generated."
@@ -661,49 +666,27 @@ def generate_textual_shap_explanation_features(shap_values, feature_names, predi
     return textual_explanation
 
 
-def interpret_shap_time_group(time_group, shap_value, activity_value):
-    """
-    Interprets a SHAP value associated with a 3-minute renogram time group.
-
-    :param time_group: The starting minute of the 3-minute group (e.g., 0, 3, 6, ... 27)
-    :param shap_value: The SHAP value (model impact at this time group)
-    :param activity_value: The summed renogram activity for this group
-    :return: A structured medical interpretation
-    """
-
-    impact = "strongly" if abs(shap_value) > 0.1 else "moderately"
-
-    # General interpretation structure
-    if shap_value > 0:
-        influence_text = f"Increased tracer activity during this period {impact} influenced the model's decision, suggesting that retention patterns were relevant to the classification."
-    else:
-        influence_text = f"Lower tracer activity during this time frame {impact} contributed to the decision, indicating that reduced uptake or faster clearance was important for classification."
-
-    return f"Between {time_group}-{time_group + 3} minutes, the summed activity was {activity_value:.2f}. {influence_text}"
-
-
-def generate_textual_shap_explanation_datapoints(shap_data, time_groups, predicted_label, confidence):
+def generate_single_textual_shap_explanation_datapoints(shap_data, time_groups, classified_label, confidence, kidney_label):
     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
     shap_values = np.array(shap_data[0])
     feature_values = np.array(shap_data[1])
 
     prompt = f"""
-      You are given renogram data where feature values represent summed intensities over {time_groups}-minute intervals, and SHAP values indicate each interval's contribution to the model's prediction. Your task is to provide an accurate textual explanation of both the renogram trend and SHAP value impact, strictly based on the provided numerical data.
+      You are given renogram data for the {kidney_label} kidney, where feature values represent summed intensities over {time_groups}-minute intervals, and SHAP values indicate each interval's contribution to the model's prediction.
+      
+      - Feature values: {feature_values.tolist()}
+      - SHAP values: {shap_values.tolist()}
+      - Model Prediction: {classified_label}
+      - Model Confidence: {confidence}
+      
+      Provide a textual explanation that:
+        - Describes the overall trend of the feature values over time for the {kidney_label} (increasing, decreasing, or fluctuating).
+        - Explains the trend of the SHAP values in similar terms.
+        - Presents the explanation in **markdown** format, but **do not** use code blocks (no triple backticks).
+    """
 
-      - Describe the overall trend of the feature values over time **only in terms of increasing, decreasing, or fluctuating**, without assuming any biological meaning.
-      - Explain the SHAP values accurately, noting whether they increase, decrease, or fluctuate over time, without making assumptions about their significance beyond their numerical contribution.
-      - Do not assume a smooth or monotonic trend for either feature values or SHAP values unless explicitly reflected in the data.
-      - Ensure the explanation is factually correct based on the provided values.
-      - Present the explanation in *markdown* format.
-
-      Feature values: {feature_values.tolist()}
-      SHAP values: {shap_values.tolist()}
-      Model Prediction: {predicted_label}
-      Model Confidence: {confidence}
-      """
-
-    model = genai.GenerativeModel("gemini-1.5-pro-latest")
+    model = genai.GenerativeModel("gemini-2.0-flash")
     response = model.generate_content(prompt)
 
     textual_explanation = response.text.strip() if hasattr(response, "text") else "No explanation generated."
@@ -711,28 +694,23 @@ def generate_textual_shap_explanation_datapoints(shap_data, time_groups, predict
     return textual_explanation
 
 
-def perform_decision_tree_analysis(total_activities, dt_model, dt_training_data):
-    total_activities = np.array(total_activities).reshape(1, -1)
+def perform_features_analysis(left_activities, right_activities, dt_model, dt_training_data):
+    left_activities = np.array(left_activities).reshape(1, -1)
+    right_activities = np.array(right_activities).reshape(1, -1)
 
-    extracted_features = extract_statistical_features(total_activities)
+    extracted_features_left = extract_statistical_features(left_activities)
+    extracted_features_right = extract_statistical_features(right_activities)
 
-    prediction, confidence, dt_model = run_single_classification_dt(extracted_features, dt_model)
+    left_uto_classification, left_uto_confidence, dt_model = run_single_uto_classification_features(extracted_features_left, dt_model)
+    right_uto_classification, right_uto_confidence, dt_model = run_single_uto_classification_features(extracted_features_right, dt_model)
 
-    explainer = shap.Explainer(dt_model, dt_training_data)
-    shap_values = explainer(extracted_features)
+    classified_left_label = "healthy" if left_uto_classification == 0 else "sick"
+    classified_right_label = "healthy" if right_uto_classification == 0 else "sick"
 
-    shap_values = shap_values[..., prediction]
+    left_shap_data, left_shap_values = calculate_shap_data_features(dt_model, dt_training_data, extracted_features_left, left_uto_classification)
+    right_shap_data, right_shap_values = calculate_shap_data_features(dt_model, dt_training_data, extracted_features_right, right_uto_classification)
 
-    shap_values_list = np.array(shap_values.values[0]).tolist()
-    feature_values_list = np.array(shap_values.data[0]).tolist()
-    base_values_list = np.full_like(shap_values_list, shap_values.base_values[0]).tolist()
+    textual_explanation_left = generate_single_textual_shap_explanation_features(left_shap_values, classified_left_label, left_uto_confidence, kidney_label="left")
+    textual_explanation_right = generate_single_textual_shap_explanation_features(right_shap_values, classified_right_label, right_uto_confidence, kidney_label="right")
 
-    shap_data = [shap_values_list, feature_values_list, base_values_list]
-
-    feature_names = ["Mean", "Variance", "Skewness", "Kurtosis"]
-    predicted_label = "healthy" if prediction == 0 else "sick"
-
-    textual_explanation = generate_textual_shap_explanation_features(shap_values, feature_names, predicted_label,
-                                                                     confidence)
-
-    return prediction, confidence, shap_data, textual_explanation
+    return left_uto_classification, right_uto_classification, left_uto_confidence, right_uto_confidence,  left_shap_data, right_shap_data, textual_explanation_left, textual_explanation_right, classified_left_label, classified_right_label
