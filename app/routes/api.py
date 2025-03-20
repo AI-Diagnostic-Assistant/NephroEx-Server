@@ -4,8 +4,8 @@ from flask import request, jsonify, Blueprint
 from app.logic.logic import perform_datapoints_analysis, perform_features_analysis, group_2_min_frames_and_save_to_storage, \
     save_total_dicom, create_ROI_contours_png, \
     save_png, \
-    fetch_model_from_supabase, load_training_data_supabase, align_masks_over_frames, align_masks_over_summed_frames, \
-    predict_kidney_masks, create_composite_image_rgb, create_renogram
+    fetch_model_from_supabase, load_training_data_supabase, create_renogram_raw, create_renogram_summed, \
+    predict_kidney_masks, create_composite_image_rgb
 from app.client import authenticate_request, create_service_account_client
 
 api = Blueprint('api', __name__)
@@ -54,16 +54,11 @@ def classify(supabase_client):
     # Predict kidney masks
     left_mask, right_mask = predict_kidney_masks(composite_image, unet_model)
 
-    # align masks over all frames in the original dicom file
-    left_mask_alignments, right_mask_alignments = align_masks_over_frames(left_mask, right_mask, dicom_read)
-    left_mask_alignments_summed, right_mask_alignments_summed = align_masks_over_summed_frames(left_mask, right_mask, dicom_read)
+    # create renograms for raw and summed data
+    left_activities, right_activities = create_renogram_raw(left_mask, right_mask, dicom_read)
+    left_activities_summed, right_activities_summed = create_renogram_summed(left_mask, right_mask, dicom_read)
 
-    # Create renogram over all frames from the predicted masks (USED FOR ONLY DISPLAY FOR CURVES)
-    left_activities, right_activities = create_renogram(left_mask_alignments, right_mask_alignments)
     roi_activity_array = [left_activities.tolist(), right_activities.tolist()]
-
-    # Create renogram over 2 min summed frames from the predicted masks (USED FOR PREDICTION)
-    left_activities_summed, right_activities_summed = create_renogram(left_mask_alignments_summed, right_mask_alignments_summed)
 
     # Datapoint and feature importance uto classifications
     left_uto_classsification_datapoints, right_uto_classification_datapoints, left_uto_confidence_datapoints, right_uto_confidence_datapoints, shap_data_left_uto_classification_datapoints, shap_data_right_uto_classification_datapoints, left_textual_explanation_datapoints, right_textual_explanation_datapoints, classified_left_label_datapoints, classified_right_label_datapoints = perform_datapoints_analysis(svm_model, svm_scaler, svm_training_data, left_activities_summed, right_activities_summed)

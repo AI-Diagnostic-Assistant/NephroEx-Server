@@ -245,7 +245,6 @@ def load_image(path: str):
 
 
 def predict_kidney_masks(composite_image, unet_model):
-
     image_tensor = torch.tensor(composite_image).permute(2, 0, 1).unsqueeze(0).float()
 
     with torch.no_grad():
@@ -257,111 +256,42 @@ def predict_kidney_masks(composite_image, unet_model):
     return pred_left_mask, pred_right_mask
 
 
-def align_masks_over_frames(left_kidney_mask, right_kidney_mask, dicom_read):
-    left_mask_alignments = []
-    right_mask_alignments = []
+def create_renogram_raw(left_kidney_mask, right_kidney_mask, dicom_read):
+    left_activities, right_activities, total_activities = [], [], []
 
-    global_max = max(np.max(dicom_read.pixel_array[frame_idx]) for frame_idx in range(dicom_read.NumberOfFrames))
+    # Ensure masks are in proper format
+    if left_kidney_mask.max() <= 1.0:
+        left_kidney_mask = (left_kidney_mask * 255).astype(np.uint8)
+    if right_kidney_mask.max() <= 1.0:
+        right_kidney_mask = (right_kidney_mask * 255).astype(np.uint8)
+
+    resized_left_kidney_roi = cv2.resize(left_kidney_mask,
+                                         (dicom_read.pixel_array.shape[2], dicom_read.pixel_array.shape[1]),
+                                         interpolation=cv2.INTER_LINEAR)
+
+    # Resize and apply the right kidney mask
+    resized_right_kidney_roi = cv2.resize(right_kidney_mask,
+                                          (dicom_read.pixel_array.shape[2], dicom_read.pixel_array.shape[1]),
+                                          interpolation=cv2.INTER_LINEAR)
+
+    if hasattr(dicom_read, "PhaseInformationSequence"):
+        phase_info = dicom_read.PhaseInformationSequence[0]
+        frame_time_ms = float(phase_info.ActualFrameDuration)
+    else:
+        # Default to 10000 ms (10 seconds) if not available
+        frame_time_ms = 10000
+
+    frame_duration = frame_time_ms / 1000.0  # convert milliseconds to seconds
 
     for frame_idx in range(dicom_read.NumberOfFrames):
-        pixel_array = dicom_read.pixel_array[frame_idx]
-        normalized_pixel_array = (pixel_array / global_max * 255).astype(np.uint8)
+        pixel_array = dicom_read.pixel_array[frame_idx].astype(np.float32)
 
-        # Ensure the kidney masks are in the range [0, 1]
-        if left_kidney_mask.max() <= 1.0 and right_kidney_mask.max() <= 1.0:
-            left_kidney_mask = (left_kidney_mask * 255).astype(np.uint8)
-            right_kidney_mask = (right_kidney_mask * 255).astype(np.uint8)
+        left_masked_frame = cv2.bitwise_and(pixel_array, pixel_array, mask=resized_left_kidney_roi)
+        right_masked_frame = cv2.bitwise_and(pixel_array, pixel_array, mask=resized_right_kidney_roi)
 
-        # Ensure the kidney ROI is single-channel (grayscale)
-        if left_kidney_mask.ndim == 3 and right_kidney_mask.ndim == 3:
-            left_kidney_mask = cv2.cvtColor(left_kidney_mask, cv2.COLOR_BGR2GRAY)
-            right_kidney_mask = cv2.cvtColor(right_kidney_mask, cv2.COLOR_BGR2GRAY)
-
-        # Resize and apply the left kidney mask
-        resized_left_kidney_roi = cv2.resize(left_kidney_mask,
-                                             (normalized_pixel_array.shape[1], normalized_pixel_array.shape[0]),
-                                             interpolation=cv2.INTER_NEAREST)
-
-        left_masked_frame = cv2.bitwise_and(normalized_pixel_array, normalized_pixel_array,
-                                            mask=resized_left_kidney_roi)
-
-        # Resize and apply the right kidney mask
-        resized_right_kidney_roi = cv2.resize(right_kidney_mask,
-                                              (normalized_pixel_array.shape[1], normalized_pixel_array.shape[0]),
-                                              interpolation=cv2.INTER_NEAREST)
-        right_masked_frame = cv2.bitwise_and(normalized_pixel_array, normalized_pixel_array,
-                                             mask=resized_right_kidney_roi)
-
-        left_mask_alignments.append(left_masked_frame)
-        right_mask_alignments.append(right_masked_frame)
-
-    return left_mask_alignments, right_mask_alignments
-
-
-def align_masks_over_summed_frames(left_kidney_mask, right_kidney_mask, dicom_read, frame_interval_seconds=10,
-                                   sum_duration_minutes=3):
-    left_mask_alignments_summed = []
-    right_mask_alignments_summed = []
-
-    global_max = 0  # Initialize global max for summed frames
-
-    # First Pass: Find Global Max
-    num_frames = dicom_read.NumberOfFrames
-    frames_per_sum = int((sum_duration_minutes * 60) / frame_interval_seconds)
-
-    for start_idx in range(0, num_frames, frames_per_sum):
-        end_idx = min(start_idx + frames_per_sum, num_frames)
-        summed_frame = np.sum(dicom_read.pixel_array[start_idx:end_idx], axis=0).astype(np.uint16)
-        global_max = max(global_max, np.max(summed_frame))  # Update global max
-
-    if global_max == 0:
-        print("Global max is zero, skipping processing to avoid division by zero.")
-        return
-
-    for start_idx in range(0, num_frames, frames_per_sum):
-        end_idx = min(start_idx + frames_per_sum, num_frames)
-        summed_frame = np.sum(dicom_read.pixel_array[start_idx:end_idx], axis=0).astype(np.uint16)
-
-        normalized_summed_frame = (summed_frame / global_max * 255).astype(np.uint8)
-
-        # Ensure the kidney masks are in the range [0, 1]
-        if left_kidney_mask.max() <= 1.0 and right_kidney_mask.max() <= 1.0:
-            left_kidney_mask = (left_kidney_mask * 255).astype(np.uint8)
-            right_kidney_mask = (right_kidney_mask * 255).astype(np.uint8)
-
-        # Ensure the kidney ROI is single-channel (grayscale)
-        if left_kidney_mask.ndim == 3 and right_kidney_mask.ndim == 3:
-            left_kidney_mask = cv2.cvtColor(left_kidney_mask, cv2.COLOR_BGR2GRAY)
-            right_kidney_mask = cv2.cvtColor(right_kidney_mask, cv2.COLOR_BGR2GRAY)
-
-        # Resize and apply the left kidney mask
-        resized_left_kidney_roi = cv2.resize(left_kidney_mask,
-                                             (normalized_summed_frame.shape[1], normalized_summed_frame.shape[0]),
-                                             interpolation=cv2.INTER_NEAREST)
-
-        left_masked_frame = cv2.bitwise_and(normalized_summed_frame, normalized_summed_frame,
-                                            mask=resized_left_kidney_roi)
-
-        # Resize and apply the right kidney mask
-        resized_right_kidney_roi = cv2.resize(right_kidney_mask,
-                                              (normalized_summed_frame.shape[1], normalized_summed_frame.shape[0]),
-                                              interpolation=cv2.INTER_NEAREST)
-        right_masked_frame = cv2.bitwise_and(normalized_summed_frame, normalized_summed_frame,
-                                             mask=resized_right_kidney_roi)
-
-        left_mask_alignments_summed.append(left_masked_frame)
-        right_mask_alignments_summed.append(right_masked_frame)
-
-    return left_mask_alignments_summed, right_mask_alignments_summed
-
-
-def create_renogram(left_mask_alignments, right_mask_alignments):
-    left_activities = []
-    right_activities = []
-
-    for frame_idx in range(len(left_mask_alignments)):
-        left_activity = compute_activity(left_mask_alignments[frame_idx])
-        right_activity = compute_activity(right_mask_alignments[frame_idx])
+        # Compute activity
+        left_activity = compute_activity(left_masked_frame, frame_duration)
+        right_activity = compute_activity(right_masked_frame, frame_duration)
 
         left_activities.append(left_activity)
         right_activities.append(right_activity)
@@ -369,12 +299,62 @@ def create_renogram(left_mask_alignments, right_mask_alignments):
     return np.array(left_activities), np.array(right_activities)
 
 
-def compute_activity(image):
-    return np.mean(image)
+def create_renogram_summed(left_kidney_mask, right_kidney_mask, dicom_read, sum_duration_minutes=3):
+    left_activities, right_activities, total_activities = [], [], []
+
+    if hasattr(dicom_read, "PhaseInformationSequence"):
+        phase_info = dicom_read.PhaseInformationSequence[0]
+        frame_time_ms = float(phase_info.ActualFrameDuration)
+
+        print("frame_time_ms", frame_time_ms)
+    else:
+        # Default to 10000 ms (10 seconds) if not available
+        frame_time_ms = 10000
+
+    frame_duration = frame_time_ms / 1000.0  # convert milliseconds to seconds
+
+    num_frames = dicom_read.NumberOfFrames
+    frames_per_sum = int((sum_duration_minutes * 60) / frame_duration)
+
+    # Ensure masks are in proper format
+    if left_kidney_mask.max() <= 1.0:
+        left_kidney_mask = (left_kidney_mask * 255).astype(np.uint8)
+    if right_kidney_mask.max() <= 1.0:
+        right_kidney_mask = (right_kidney_mask * 255).astype(np.uint8)
+
+    # Resize kidney masks **once before the loop**
+    resized_left_kidney_roi = cv2.resize(left_kidney_mask,
+                                         (dicom_read.pixel_array.shape[2], dicom_read.pixel_array.shape[1]),
+                                         interpolation=cv2.INTER_LINEAR)
+    resized_right_kidney_roi = cv2.resize(right_kidney_mask,
+                                          (dicom_read.pixel_array.shape[2], dicom_read.pixel_array.shape[1]),
+                                          interpolation=cv2.INTER_LINEAR)
+
+    for start_idx in range(0, num_frames, frames_per_sum):
+        end_idx = min(start_idx + frames_per_sum, num_frames)
+
+        summed_pixel_array = np.sum(dicom_read.pixel_array[start_idx:end_idx], axis=0).astype(np.uint16)
+
+        left_masked_frame = cv2.bitwise_and(summed_pixel_array, summed_pixel_array, mask=resized_left_kidney_roi)
+        right_masked_frame = cv2.bitwise_and(summed_pixel_array, summed_pixel_array, mask=resized_right_kidney_roi)
+
+        left_activity = compute_activity(left_masked_frame, frame_duration)
+        right_activity = compute_activity(right_masked_frame, frame_duration)
+
+        # Store activities
+        left_activities.append(left_activity)
+        right_activities.append(right_activity)
+
+    return np.array(left_activities), np.array(right_activities)
+
+
+def compute_activity(masked_array, frame_duration):
+    """Compute counts per second by dividing the sum of counts by the frame duration (in seconds)."""
+    total_counts = np.sum(masked_array)
+    return total_counts / frame_duration
 
 
 def calculate_shap_data_datapoints(model, training_data, explainer_data, prediction, svm_scaler):
-
     explainer_data = np.array(explainer_data).reshape(1, -1)
 
     scaled_explainer_data = svm_scaler.transform(explainer_data)
@@ -413,14 +393,20 @@ def calculate_shap_data_features(model, training_data, explainer_data, classific
     return shap_data, shap_values
 
 
-def perform_datapoints_analysis(svm_model, svm_scaler, svm_training_data, left_activities_summed, right_activities_summed):
-
+def perform_datapoints_analysis(svm_model, svm_scaler, svm_training_data, left_activities_summed,
+                                right_activities_summed):
     # Classify UTO for left and right kidneys
-    left_uto_classification, left_uto_confidence = run_single_classification_datapoints(left_activities_summed, svm_model, svm_scaler)
-    right_uto_classification, right_uto_confidence = run_single_classification_datapoints(right_activities_summed, svm_model, svm_scaler)
+    left_uto_classification, left_uto_confidence = run_single_classification_datapoints(left_activities_summed,
+                                                                                        svm_model, svm_scaler)
+    right_uto_classification, right_uto_confidence = run_single_classification_datapoints(right_activities_summed,
+                                                                                          svm_model, svm_scaler)
 
-    shap_data_left_uto_classification = calculate_shap_data_datapoints(svm_model, svm_training_data, left_activities_summed.tolist(), left_uto_classification, svm_scaler)
-    shap_data_right_uto_classification = calculate_shap_data_datapoints(svm_model, svm_training_data, right_activities_summed.tolist(), right_uto_classification, svm_scaler)
+    shap_data_left_uto_classification = calculate_shap_data_datapoints(svm_model, svm_training_data,
+                                                                       left_activities_summed.tolist(),
+                                                                       left_uto_classification, svm_scaler)
+    shap_data_right_uto_classification = calculate_shap_data_datapoints(svm_model, svm_training_data,
+                                                                        right_activities_summed.tolist(),
+                                                                        right_uto_classification, svm_scaler)
 
     time_groups = list(range(0, 30, 3))
 
@@ -545,13 +531,13 @@ def save_png(image, bucket: str, supabase_client):
     return response.path
 
 
-
-#THIS HAS TO BE CHANGED
+# THIS HAS TO BE CHANGED
 def extract_statistical_features(X):
     return np.array([
         [np.mean(curve), np.var(curve), skew(curve), kurtosis(curve)]
         for curve in X
     ])
+
 
 def run_single_uto_classification_features(extracted_features, dt_model):
     probabilities = dt_model.predict_proba(extracted_features)[0]
@@ -666,7 +652,8 @@ def generate_single_textual_shap_explanation_features(shap_values, predicted_lab
     return textual_explanation
 
 
-def generate_single_textual_shap_explanation_datapoints(shap_data, time_groups, classified_label, confidence, kidney_label):
+def generate_single_textual_shap_explanation_datapoints(shap_data, time_groups, classified_label, confidence,
+                                                        kidney_label):
     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
     shap_values = np.array(shap_data[0])
@@ -701,16 +688,27 @@ def perform_features_analysis(left_activities, right_activities, dt_model, dt_tr
     extracted_features_left = extract_statistical_features(left_activities)
     extracted_features_right = extract_statistical_features(right_activities)
 
-    left_uto_classification, left_uto_confidence, dt_model = run_single_uto_classification_features(extracted_features_left, dt_model)
-    right_uto_classification, right_uto_confidence, dt_model = run_single_uto_classification_features(extracted_features_right, dt_model)
+    left_uto_classification, left_uto_confidence, dt_model = run_single_uto_classification_features(
+        extracted_features_left, dt_model)
+    right_uto_classification, right_uto_confidence, dt_model = run_single_uto_classification_features(
+        extracted_features_right, dt_model)
 
     classified_left_label = "healthy" if left_uto_classification == 0 else "sick"
     classified_right_label = "healthy" if right_uto_classification == 0 else "sick"
 
-    left_shap_data, left_shap_values = calculate_shap_data_features(dt_model, dt_training_data, extracted_features_left, left_uto_classification)
-    right_shap_data, right_shap_values = calculate_shap_data_features(dt_model, dt_training_data, extracted_features_right, right_uto_classification)
+    left_shap_data, left_shap_values = calculate_shap_data_features(dt_model, dt_training_data, extracted_features_left,
+                                                                    left_uto_classification)
+    right_shap_data, right_shap_values = calculate_shap_data_features(dt_model, dt_training_data,
+                                                                      extracted_features_right,
+                                                                      right_uto_classification)
 
-    textual_explanation_left = generate_single_textual_shap_explanation_features(left_shap_values, classified_left_label, left_uto_confidence, kidney_label="left")
-    textual_explanation_right = generate_single_textual_shap_explanation_features(right_shap_values, classified_right_label, right_uto_confidence, kidney_label="right")
+    textual_explanation_left = generate_single_textual_shap_explanation_features(left_shap_values,
+                                                                                 classified_left_label,
+                                                                                 left_uto_confidence,
+                                                                                 kidney_label="left")
+    textual_explanation_right = generate_single_textual_shap_explanation_features(right_shap_values,
+                                                                                  classified_right_label,
+                                                                                  right_uto_confidence,
+                                                                                  kidney_label="right")
 
-    return left_uto_classification, right_uto_classification, left_uto_confidence, right_uto_confidence,  left_shap_data, right_shap_data, textual_explanation_left, textual_explanation_right, classified_left_label, classified_right_label
+    return left_uto_classification, right_uto_classification, left_uto_confidence, right_uto_confidence, left_shap_data, right_shap_data, textual_explanation_left, textual_explanation_right, classified_left_label, classified_right_label
