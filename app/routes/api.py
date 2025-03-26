@@ -94,6 +94,11 @@ def classify(supabase_client):
                     "category": "renogram",
                     "roi_activity": roi_activity_array,
                 },
+                {
+                    "report_id": report_id,
+                    "category": "feature",
+                    "roi_activity": roi_activity_array,
+                },
             ])
             .execute()
         )
@@ -102,6 +107,7 @@ def classify(supabase_client):
             return jsonify({'error': 'Failed to insert analyses'}), 500
 
         renogram_analysis_id = analysis_response.data[0]["id"]
+        feature_analysis_id = analysis_response.data[1]["id"]
 
         classification_response = (
             supabase_client.table("classification")
@@ -121,14 +127,14 @@ def classify(supabase_client):
                     "kidney_label": "right",
                 },
                 {
-                    "analysis_id": renogram_analysis_id,
+                    "analysis_id": feature_analysis_id,
                     "prediction": classified_left_label_features,
                     "confidence": float(left_uto_confidence_features),
                     "type": "decision_tree",
                     "kidney_label": "left",
                 },
                 {
-                    "analysis_id": renogram_analysis_id,
+                    "analysis_id": feature_analysis_id,
                     "prediction": classified_right_label_features,
                     "confidence": float(right_uto_confidence_features),
                     "type": "decision_tree",
