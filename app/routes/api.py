@@ -34,6 +34,15 @@ def classify(supabase_client):
     if "patientId" not in request.form:
         return jsonify({'error': 'No patientId in the request'}), 400
 
+    if "diuretic" not in request.form:
+        return jsonify({'error': 'No diuretic in the request'}), 400
+
+    diuretic = request.form.get('diuretic')
+    try:
+        diuretic = int(diuretic)
+    except ValueError:
+        return jsonify({'error': 'Diuretic value must be a number'}), 400
+
     dicom_file = request.files.getlist('file')
     patient_id = request.form.get('patientId')
 
@@ -77,6 +86,7 @@ def classify(supabase_client):
                 "dicom_storage_ids": grouped_2_min_storage_ids,
                 "patient_dicom_storage_id": dicom_storage_id,
                 "roi_contour_object_path": roi_contour_object_path,
+                "diuretic_timing": diuretic
             })
             .execute()
         )
