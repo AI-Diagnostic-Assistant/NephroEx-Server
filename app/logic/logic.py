@@ -43,11 +43,6 @@ def load_model(filename, is_cnn_model=False, is_unet_model=False):
         return model
 
 
-def calculate_aquasition_time(dicom_read):
-
-
-
-
 def load_training_data_supabase(supabase_client, filename):
     response = supabase_client.storage.from_("ai-models").download(filename)
 
