@@ -1,23 +1,31 @@
 import io
 import pydicom
 from flask import request, jsonify, Blueprint
-from app.logic.logic import perform_datapoints_analysis, perform_features_analysis, group_2_min_frames_and_save_to_storage, \
+from app.logic.logic import perform_datapoints_analysis, perform_features_analysis, \
+    group_2_min_frames_and_save_to_storage, \
     save_total_dicom, create_ROI_contours_png, \
     save_png, \
-    fetch_model_from_supabase, load_training_data_supabase, create_renogram_raw, create_renogram_summed, \
-    predict_kidney_masks, create_composite_image_rgb
+    load_model, load_training_data_supabase, create_renogram_raw, create_renogram_summed, \
+    predict_kidney_masks, create_composite_image_rgb, load_training_data_local
 from app.client import authenticate_request, create_service_account_client
 
 api = Blueprint('api', __name__)
 
 supabase_client = create_service_account_client()
 
-svm_model = fetch_model_from_supabase(supabase_client, "svm_model_summed.joblib")
-svm_scaler = fetch_model_from_supabase(supabase_client, "svm_scaler_summed.joblib")
-svm_training_data = load_training_data_supabase(supabase_client, "svm_training_data.npy")
-dt_model = fetch_model_from_supabase(supabase_client, "random_forest_best_final.joblib")
-dt_training_data = load_training_data_supabase(supabase_client, "random_forest_training_data_best_final.npy")
-unet_model = fetch_model_from_supabase(supabase_client, "unet_model.pth", is_unet_model=True)
+#svm_model = fetch_model_from_supabase(supabase_client, "svm_model_summed.joblib")
+#svm_scaler = fetch_model_from_supabase(supabase_client, "svm_scaler_summed.joblib")
+#svm_training_data = load_training_data_supabase(supabase_client, "svm_training_data.npy")
+#dt_model = fetch_model_from_supabase(supabase_client, "random_forest_best_final.joblib")
+#dt_training_data = load_training_data_supabase(supabase_client, "random_forest_training_data_best_final.npy")
+#unet_model = fetch_model_from_supabase(supabase_client, "unet_model.pth", is_unet_model=True)
+
+svm_model = load_model("models/svm/svm_best_model_summed.joblib")
+svm_scaler = load_model("models/svm/scaler_summed.joblib")
+svm_training_data = load_training_data_local("models/svm/svm_best_training_data_summed.npy")
+rf_model = load_model("models/rf/rf_best.joblib")
+rf_training_data = load_training_data_local("models/rf/rf_training_data_best.npy")
+unet_model = load_model("models/unet/final_unet_model.pth", is_unet_model=True)
 
 
 @api.route('/')
@@ -37,9 +45,9 @@ def classify(supabase_client):
     if "diuretic" not in request.form:
         return jsonify({'error': 'No diuretic in the request'}), 400
 
-    diuretic = request.form.get('diuretic')
+    diuretic_time = request.form.get('diuretic')
     try:
-        diuretic = int(diuretic)
+        diuretic = int(diuretic_time)
     except ValueError:
         return jsonify({'error': 'Diuretic value must be a number'}), 400
 
@@ -71,7 +79,7 @@ def classify(supabase_client):
 
     # Datapoint and feature importance uto classifications
     left_uto_classsification_datapoints, right_uto_classification_datapoints, left_uto_confidence_datapoints, right_uto_confidence_datapoints, shap_data_left_uto_classification_datapoints, shap_data_right_uto_classification_datapoints, left_textual_explanation_datapoints, right_textual_explanation_datapoints, classified_left_label_datapoints, classified_right_label_datapoints = perform_datapoints_analysis(svm_model, svm_scaler, svm_training_data, left_activities_summed, right_activities_summed)
-    left_uto_classification_features, right_uto_classification_features, left_uto_confidence_features, right_uto_confidence_features, shap_data_left_uto_classification_features, shap_data_right_uto_classification_features, left_textual_explanation_features, right_textual_explanation_features, classified_left_label_features, classified_right_label_features = perform_features_analysis(left_activities, right_activities, dt_model, dt_training_data)
+    left_uto_classification_features, right_uto_classification_features, left_uto_confidence_features, right_uto_confidence_features, shap_data_left_uto_classification_features, shap_data_right_uto_classification_features, left_textual_explanation_features, right_textual_explanation_features, classified_left_label_features, classified_right_label_features = perform_features_analysis(left_activities, right_activities, rf_model, rf_training_data, diuretic_time)
 
     # Create and upload ROI contours
     transparent_contour_image = create_ROI_contours_png(left_mask, right_mask)

@@ -15,31 +15,37 @@ from app.logic.CNN import Simple3DCNN
 feature_maps = None
 gradients = None
 
+def load_model(filename, is_cnn_model=False, is_unet_model=False):
+    try:
+        with open(filename, 'rb') as file:
+            file_content = file.read()
+    except FileNotFoundError:
+        raise RuntimeError("Failed to load model. Check file existence.")
 
-def fetch_model_from_supabase(supabase_client, filename, is_cnn_model=False, is_unet_model=False):
-    response = supabase_client.storage.from_("ai-models").download(filename)
+    model_bytes = io.BytesIO(file_content)
 
-    if response:
-        model_bytes = io.BytesIO(response)
-        if is_cnn_model:
-            model = Simple3DCNN()
-            model.load_state_dict(torch.load(model_bytes, map_location=torch.device("cpu"), weights_only=False))
-            model.eval()
-            print(f"{filename} (Torch Model) loaded successfully.")
+    if is_cnn_model:
+        model = Simple3DCNN()
+        model.load_state_dict(torch.load(model_bytes, map_location=torch.device("cpu"), weights_only=False))
+        model.eval()
+        print(f"{filename} (Torch Model) loaded successfully.")
 
-            return model
-        if is_unet_model:
-            model = torch.load(model_bytes, map_location=torch.device('cpu'), weights_only=False)
-            model.eval()
-            print(f"{filename} (Torch Model) loaded successfully.")
+        return model
+    if is_unet_model:
+        model = torch.load(model_bytes, map_location=torch.device('cpu'), weights_only=False)
+        model.eval()
+        print(f"{filename} (Torch Model) loaded successfully.")
 
-            return model
-        else:
-            model = joblib.load(model_bytes)
-            print(f"{filename} (Joblib Model/Scaler) loaded successfully.")
-            return model
+        return model
     else:
-        raise RuntimeError("Failed to fetch model from Supabase. Check permissions or file existence.")
+        model = joblib.load(model_bytes)
+        print(f"{filename} (Joblib Model/Scaler) loaded successfully.")
+        return model
+
+
+def calculate_aquasition_time(dicom_read):
+
+
 
 
 def load_training_data_supabase(supabase_client, filename):
@@ -54,6 +60,16 @@ def load_training_data_supabase(supabase_client, filename):
         return training_data
     else:
         raise RuntimeError(f"Failed to fetch {filename} from Supabase. Check permissions or file existence.")
+
+
+
+def load_training_data_local(filename):
+    try:
+        training_data = np.load(filename, allow_pickle=True)
+        print(f"{filename} (NumPy Array) loaded successfully.")
+        return training_data
+    except FileNotFoundError:
+        raise RuntimeError(f"Failed to load {filename} from local directory. Check file existence.")
 
 
 def save_image_to_bytes(image):
@@ -299,16 +315,13 @@ def create_renogram_raw(left_kidney_mask, right_kidney_mask, dicom_read):
     return np.array(left_activities), np.array(right_activities)
 
 
-def create_renogram_summed(left_kidney_mask, right_kidney_mask, dicom_read, sum_duration_minutes=3):
+def create_renogram_summed(left_kidney_mask, right_kidney_mask, dicom_read, sum_duration_minutes=2):
     left_activities, right_activities, total_activities = [], [], []
 
     if hasattr(dicom_read, "PhaseInformationSequence"):
         phase_info = dicom_read.PhaseInformationSequence[0]
         frame_time_ms = float(phase_info.ActualFrameDuration)
-
-        print("frame_time_ms", frame_time_ms)
     else:
-        # Default to 10000 ms (10 seconds) if not available
         frame_time_ms = 10000
 
     frame_duration = frame_time_ms / 1000.0  # convert milliseconds to seconds
@@ -379,7 +392,13 @@ def calculate_shap_data_datapoints(model, training_data, explainer_data, predict
 def calculate_shap_data_features(model, training_data, explainer_data, classification):
     explainer = shap.Explainer(model, training_data)
 
+    print("classification", classification)
+
+    print("explainer_data", explainer_data)
+
     shap_values = explainer(explainer_data)
+
+    print("shap_values", shap_values)
 
     shap_values = shap_values[..., classification]
 
@@ -395,6 +414,11 @@ def calculate_shap_data_features(model, training_data, explainer_data, classific
 
 def perform_datapoints_analysis(svm_model, svm_scaler, svm_training_data, left_activities_summed,
                                 right_activities_summed):
+
+    # Pad sequences to fixed length
+    left_activities_summed = pad_or_truncate_sequence(left_activities_summed, fixed_length=20, padding_value=0)
+    right_activities_summed = pad_or_truncate_sequence(right_activities_summed, fixed_length=20, padding_value=0)
+
     # Classify UTO for left and right kidneys
     left_uto_classification, left_uto_confidence = run_single_classification_datapoints(left_activities_summed,
                                                                                         svm_model, svm_scaler)
@@ -408,7 +432,7 @@ def perform_datapoints_analysis(svm_model, svm_scaler, svm_training_data, left_a
                                                                         right_activities_summed.tolist(),
                                                                         right_uto_classification, svm_scaler)
 
-    time_groups = list(range(0, 30, 3))
+    time_groups = list(range(0, 40, 2))
 
     classified_left_label = "healthy" if left_uto_classification == 0 else "sick"
     classified_right_label = "healthy" if right_uto_classification == 0 else "sick"
@@ -435,12 +459,9 @@ def perform_datapoints_analysis(svm_model, svm_scaler, svm_training_data, left_a
 def group_2_min_frames(dicom_read):
     frames = dicom_read.pixel_array
 
-    if len(frames) != 180:
-        raise ValueError("Expected 180 frames in the DICOM file.")
-
     # Group into 15 summed frames
     grouped_frames = []
-    for i in range(0, 180, 12):
+    for i in range(0, len(frames), 12):
         group = frames[i:i + 12]
         summed_frame = np.sum(group, axis=0)
         grouped_frames.append(summed_frame)
@@ -518,6 +539,17 @@ def create_ROI_contours_png(mask_left, mask_right):
     return rgba_image
 
 
+def pad_or_truncate_sequence(seq, fixed_length=20, padding_value=0):
+    seq_length = seq.shape[0]
+    if seq_length < fixed_length:
+        pad_length = fixed_length - seq_length
+        extra_padding = np.full((pad_length,), padding_value, dtype=seq.dtype)
+        seq = np.concatenate([seq, extra_padding])
+    elif seq_length > fixed_length:
+        seq = seq[:fixed_length]
+    return seq
+
+
 def save_png(image, bucket: str, supabase_client):
     img = Image.fromarray(image)
 
@@ -530,16 +562,121 @@ def save_png(image, bucket: str, supabase_client):
                                                             file_options={'content-type': 'image/png'})
     return response.path
 
+def extract_quantitative_features(curve, frame_interval=10, diuretic_time=20):
 
-# THIS HAS TO BE CHANGED
-def extract_statistical_features(X):
-    return np.array([
-        [np.mean(curve), np.var(curve), skew(curve), kurtosis(curve)]
-        for curve in X
-    ])
+    if isinstance(curve, torch.Tensor):
+        curve = curve.cpu().detach().numpy()
+
+    # Basic statistical features
+    mean_val = np.mean(curve)
+    var_val = np.var(curve)
+    skew_val = skew(curve)
+    kurt_val = kurtosis(curve)
+
+    print("curve", curve)
+
+    # Compute time vector (in seconds)
+    n_frames = len(curve)
+
+    print("n_frames", n_frames)
+
+    time_vector = np.arange(n_frames) * (frame_interval / 60.0)
+
+    print("time_vector", time_vector)
+
+    # Time-to-Peak: time at which maximum count occurs
+    peak_index = np.argmax(curve)
+
+    print('peak_index', peak_index)
+
+    time_to_peak = time_vector[peak_index]
+
+    print('time_to_peak', time_to_peak)
+
+    peak_count = curve[peak_index]
+
+    print('peak_count', peak_count)
+
+    injection_frame = int(diuretic_time / (frame_interval / 60 ))
+
+    # 20-min Count Ratio: count at 20 minutes relative to the peak count.
+    #if injection_frame < n_frames:
+      #  count_20min = curve[injection_frame]
+      #  ratio_20min = count_20min / peak_count if peak_count != 0 else np.nan
+    #else:
+       # ratio_20min = np.nan
+
+    # Baseline Half-Time (T½ Pre-Furosemide):
+    # Look for the time (after the peak) where the count falls to half the peak,
+    # but only consider frames before the injection.
+    baseline_half_time = np.nan
+    if peak_index < injection_frame:
+        for i in range(peak_index, min(injection_frame, n_frames)):
+            if curve[i] <= peak_count / 2:
+                baseline_half_time = time_vector[i] - time_to_peak
+                break
+
+
+    # Get the count at injection time
+    injection_count = curve[injection_frame]
+
+    # Diuretic Half-Time (T½ Post-Furosemide based on injection count)
+    diuretic_half_time = np.nan
+
+    if injection_frame < n_frames:
+      # Threshold = half of the injection-time count
+      half_threshold = injection_count / 2.0
+
+      for i in range(injection_frame, n_frames):
+          if curve[i] <= half_threshold:
+              # Time from injection (in seconds) to the frame i
+              diuretic_half_time = time_vector[i] - diuretic_time
+              break
+
+
+    # Additional Feature: 30 min/Peak Ratio
+    frame_30min = int((30 * 60) / frame_interval)
+    if frame_30min < n_frames:
+        count_30min = curve[frame_30min]
+        ratio_30min = count_30min / peak_count if peak_count != 0 else np.nan
+    else:
+        ratio_30min = np.nan
+
+    # Additional Feature: 30 min/3 min Ratio
+    frame_3min = int((3 * 60) / frame_interval)
+    if frame_30min < n_frames and frame_3min < n_frames:
+        count_3min = curve[frame_3min]
+        ratio_30_3 = count_30min / count_3min if count_3min != 0 else np.nan
+    else:
+        ratio_30_3 = np.nan
+
+
+    baseline_half_time = -1 if np.isnan(baseline_half_time) else baseline_half_time
+    diuretic_half_time = -1 if np.isnan(diuretic_half_time) else diuretic_half_time
+    ratio_30min = -1 if np.isnan(ratio_30min) else ratio_30min
+    ratio_30_3 = -1 if np.isnan(ratio_30_3) else ratio_30_3
+
+    features = {
+        "mean_val": mean_val,
+        "var_val": var_val,
+        "skew_val": skew_val,
+        "kurt_val": kurt_val,
+        "time_to_peak": time_to_peak,
+        "baseline_half_time": baseline_half_time,
+        "diuretic_half_time": diuretic_half_time,
+        "ratio_30min": ratio_30min,
+        "ratio_30_3": ratio_30_3
+    }
+
+    print(features)
+
+    return [mean_val, var_val, skew_val, kurt_val,
+            time_to_peak, baseline_half_time, diuretic_half_time,
+            ratio_30min, ratio_30_3]
 
 
 def run_single_uto_classification_features(extracted_features, dt_model):
+
     probabilities = dt_model.predict_proba(extracted_features)[0]
     predicted_class = dt_model.predict(extracted_features)
 
@@ -599,6 +736,35 @@ def interpret_shap_feature(name, shap_val, value):
                 f"SHAP impact: {shap_val:.3f}. "
                 "Higher kurtosis suggests sharp peaks in uptake, which might indicate abnormal renal behavior.")
 
+    # New features
+    elif name == "Baseline Half-Time":
+        return (
+            f"A **Baseline Half-Time** of {value:.1f} frames indicates the time it takes for the baseline tracer uptake to reduce by half. "
+            f"The SHAP impact of {shap_val:.3f} suggests this feature is influential. "
+            "A prolonged half-time may reflect delayed clearance, whereas a shorter half-time indicates prompt processing."
+        )
+
+    elif name == "Diuretic Half-Time":
+        return (
+            f"A **Diuretic Half-Time** of {value:.1f} frames represents the time after diuretic administration for the tracer activity to decrease by half. "
+            f"With a SHAP impact of {shap_val:.3f}, this factor contributes to the model's prediction. "
+            "A longer half-time might indicate a sluggish diuretic response, while a shorter half-time suggests efficient tracer clearance."
+        )
+
+    elif name == "Ratio 30min/Peak":
+        return (
+            f"A **Ratio 30min/Peak** value of {value:.3f} compares the tracer uptake at 30 minutes to the peak uptake value. "
+            f"The SHAP impact of {shap_val:.3f} underscores its role in the decision process. "
+            "A lower ratio may suggest rapid tracer clearance, whereas a higher ratio indicates sustained uptake over time."
+        )
+
+    elif name == "Ratio 30min/3min":
+        return (
+            f"A **Ratio 30min/3min** value of {value:.3f} contrasts the tracer uptake at 30 minutes with that at 3 minutes. "
+            f"With a SHAP impact of {shap_val:.3f}, this feature helps differentiate uptake patterns. "
+            "A higher ratio may indicate prolonged tracer retention, while a lower ratio points to a quicker clearance."
+        )
+
     else:
         return "Feature impact needs further interpretation."
 
@@ -606,11 +772,10 @@ def interpret_shap_feature(name, shap_val, value):
 def generate_single_textual_shap_explanation_features(shap_values, predicted_label, confidence, kidney_label):
     genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
-    feature_names = ["Mean", "Variance", "Skewness", "Kurtosis"]
+    feature_names = ["Mean", "Variance", "Skewness", "Kurtosis", "Time to Peak", "Baseline Half-Time", "Diuretic Half-Time", "Ratio 30min/Peak", "Ratio 30min/3min"]
 
     # Extract necessary information
     shap_contributions = shap_values.values[0].tolist()
-
     feature_values = shap_values.data[0].tolist()
 
     feature_importance = sorted(
@@ -681,12 +846,15 @@ def generate_single_textual_shap_explanation_datapoints(shap_data, time_groups, 
     return textual_explanation
 
 
-def perform_features_analysis(left_activities, right_activities, dt_model, dt_training_data):
+def perform_features_analysis(left_activities, right_activities, dt_model, dt_training_data, diuretic_time):
     left_activities = np.array(left_activities).reshape(1, -1)
     right_activities = np.array(right_activities).reshape(1, -1)
 
-    extracted_features_left = extract_statistical_features(left_activities)
-    extracted_features_right = extract_statistical_features(right_activities)
+    extracted_features_left = extract_quantitative_features(left_activities[0], 10, int(diuretic_time))
+    extracted_features_right = extract_quantitative_features(right_activities[0], 10, int(diuretic_time))
+
+    extracted_features_left = np.array(extracted_features_left).reshape(1, -1)
+    extracted_features_right = np.array(extracted_features_right).reshape(1, -1)
 
     left_uto_classification, left_uto_confidence, dt_model = run_single_uto_classification_features(
         extracted_features_left, dt_model)
