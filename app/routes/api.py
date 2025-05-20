@@ -1,13 +1,12 @@
 import io
 import pydicom
 from flask import request, jsonify, Blueprint
-from matplotlib import pyplot as plt
 
 from app.logic.logic import perform_datapoints_analysis, perform_features_analysis, \
     group_2_min_frames_and_save_to_storage, \
     save_total_dicom, create_ROI_contours_png, \
     save_png, load_training_data_supabase, create_renogram_raw, \
-    predict_kidney_masks, create_composite_image_rgb, fetch_model_from_supabase, create_uptake_composite_image, cubic_smooth_renograms, interpolate_renograms
+    predict_kidney_masks, fetch_model_from_supabase, create_uptake_composite_image, cubic_smooth_renograms, interpolate_renograms
 from app.client import authenticate_request, create_service_account_client
 
 api = Blueprint('api', __name__)
@@ -19,14 +18,6 @@ knn_training_data = load_training_data_supabase(supabase_client, "knn_training_d
 rf_model = fetch_model_from_supabase(supabase_client, "rf_best.joblib")
 rf_training_data = load_training_data_supabase(supabase_client, "rf_training_data_best.npy")
 unet_model = fetch_model_from_supabase(supabase_client, "unet_model.pth", is_unet_model=True)
-
-#svm_model = load_model("models/svm/svm_best_model_summed.joblib")
-#svm_scaler = load_model("models/svm/scaler_summed.joblib")
-#svm_training_data = load_training_data_local("models/svm/svm_best_training_data_summed.npy")
-#rf_model = load_model("models/rf/rf_best.joblib")
-#rf_training_data = load_training_data_local("models/rf/rf_training_data_best.npy")
-#unet_model = load_model("models/unet/final_unet_model.pth", is_unet_model=True)
-
 
 @api.route('/')
 @api.route('/index')
@@ -78,17 +69,11 @@ def classify(supabase_client):
 
     interpolated_tv, interpolated_seqs = interpolate_renograms(roi_activity_array, time_vector, target_len=220)
 
-    #Smooth alone here
     interpolated_smoothed_activity_array = cubic_smooth_renograms(interpolated_seqs, interpolated_tv)
     original_smoothed_activity_array = cubic_smooth_renograms(roi_activity_array, time_vector)
 
-    # Datapoint and feature importance uto classifications
     left_uto_classsification_datapoints, right_uto_classification_datapoints, left_uto_confidence_datapoints, right_uto_confidence_datapoints, shap_data_left_uto_classification_datapoints, shap_data_right_uto_classification_datapoints, left_textual_explanation_datapoints, right_textual_explanation_datapoints, classified_left_label_datapoints, classified_right_label_datapoints, time_bins_left, time_bins_right = perform_datapoints_analysis(knn_model, knn_training_data, interpolated_smoothed_activity_array, interpolated_tv, diuretic)
     left_uto_classification_features, right_uto_classification_features, left_uto_confidence_features, right_uto_confidence_features, shap_data_left_uto_classification_features, shap_data_right_uto_classification_features, left_textual_explanation_features, right_textual_explanation_features, classified_left_label_features, classified_right_label_features = perform_features_analysis(original_smoothed_activity_array, rf_model, rf_training_data, diuretic_time, time_vector)
-
-
-    #print("shap_data_left_uto_classification_datapoints", shap_data_left_uto_classification_datapoints)
-    #print("shap_data_right_uto_classification_datapoints", shap_data_right_uto_classification_datapoints)
 
     # Create and upload ROI contours
     transparent_contour_image = create_ROI_contours_png(left_mask, right_mask)

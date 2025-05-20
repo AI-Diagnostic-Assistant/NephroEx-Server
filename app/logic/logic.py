@@ -8,7 +8,6 @@ import torch
 import os
 import joblib
 from PIL import Image
-from matplotlib import pyplot as plt
 from scipy.interpolate import UnivariateSpline, interp1d
 from scipy.stats import skew, kurtosis
 import shap
@@ -308,16 +307,6 @@ def cubic_smooth_renograms(curves, time_vector):
         # evaluate the smoothing spline back at the *original* time points
         smooth_seq = spline(time_vector)
         smoothed_curves.append(smooth_seq.tolist())
-
-    plt.figure(figsize=(8, 4))
-    plt.plot(time_vector, curves[0], '-', lw=1, alpha=0.6, label='Raw (noisy)')
-    plt.plot(time_vector, smoothed_curves[0], '-', lw=3, label='Smoothed')
-    plt.xlabel('Time (minutes)')
-    plt.ylabel('Activity')
-    plt.title('Left Kidney Renogram — raw vs smoothed vs interpolated')
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
 
     return smoothed_curves
 
